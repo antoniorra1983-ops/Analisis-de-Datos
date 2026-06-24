@@ -433,27 +433,58 @@ def _pm_detectar(sh):
     return fila_enc, bloques
 
 
-def _pm_destino(origen: str, raw) -> str:
-    if isinstance(raw, str):
-        s = raw.strip().upper()
-        if s in _ESTACIONES:
-            return s
-        if s == "":
-            raw = None
-    if isinstance(raw, (int, float)) and float(raw) == int(raw):
-        return ZONA_A_ESTACION.get(int(raw), "LIM" if origen == "PUE" else "PUE")
-    return "LIM" if origen == "PUE" else "PUE"
+def _pm_destino(origen: str, via, raw) -> str:
+    """Estación destino del viaje. Para salidas de Puerto se deduce de la vía
+    (6→LIM, 4→SGA); el resto de terminales van a Puerto. Un código de estación
+    explícito en la celda (p. ej. sábado) tiene prioridad."""
+    if isinstance(raw, str) and raw.strip().upper() in _ESTACIONES:
+        return raw.strip().upper()
+    if origen == "PUE":
+        try:
+            return ZONA_A_ESTACION.get(int(via), "LIM")
+        except (TypeError, ValueError):
+            return "LIM"
+    return "PUE"
 
 
-def _pm_unidades(sh, r, colmap, umbral=400) -> int:
-    cap = _pm_val(sh, r, colmap.get("Capacidad"))
-    if isinstance(cap, (int, float)) and cap:
-        return 2 if cap >= umbral else 1
-    return 2 if "ltiple" in str(_pm_val(sh, r, colmap.get("M"))).lower() else 1
+def _pm_a_entero(v):
+    """Convierte a int un valor que puede venir como número o como texto ('6')."""
+    try:
+        if isinstance(v, str):
+            v = v.strip()
+            if v == "":
+                return None
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
 
 
-def leer_planilla_maniobras(origen, hoja: str = "Planilla + Maniobras") -> list[dict]:
-    """Extrae los servicios de una hoja Planilla + Maniobras. `origen` puede ser ruta o bytes."""
+def _pm_mapas_por_tren(sh, fila_enc, bloques):
+    """Recorre toda la hoja y arma dos mapas por tren:
+       - via_por_tren: el valor (fijo) de la columna Destino de ese tren -> es la vía.
+       - trenes_multiple: trenes con 'Múltiple' en la columna M en cualquier fila."""
+    via_por_tren: dict[int, int] = {}
+    trenes_multiple: set[int] = set()
+    for _code, colmap in bloques:
+        for r in range(fila_enc + 1, sh.nrows):
+            tren = _pm_a_entero(_pm_val(sh, r, colmap.get("Tren")))
+            if tren is None or tren <= 0:
+                continue
+            if "ltiple" in str(_pm_val(sh, r, colmap.get("M"))).lower():
+                trenes_multiple.add(tren)
+            via = _pm_a_entero(_pm_val(sh, r, colmap.get("Destino")))
+            if tren not in via_por_tren and via is not None:
+                via_por_tren[tren] = via
+    return via_por_tren, trenes_multiple
+
+
+def leer_planilla_maniobras(origen, hoja: str = "Planilla + Maniobras", via_defecto: int = 1) -> list[dict]:
+    """Extrae los servicios de una hoja Planilla + Maniobras. `origen` puede ser ruta o bytes.
+
+    La vía (columnas C/E del simulador) sale de la columna Destino, que es fija
+    por tren, y se arrastra a todos sus viajes (incluida la vuelta a Puerto).
+    Un tren es doble si aparece 'Múltiple' en alguna de sus filas.
+    """
     import xlrd
     if isinstance(origen, (bytes, bytearray)):
         wb = xlrd.open_workbook(file_contents=bytes(origen))
@@ -464,6 +495,7 @@ def leer_planilla_maniobras(origen, hoja: str = "Planilla + Maniobras") -> list[
         hoja = next((n for n in nombres if "maniobra" in n.lower()), nombres[0])
     sh = wb.sheet_by_name(hoja)
     fila_enc, bloques = _pm_detectar(sh)
+    via_por_tren, trenes_multiple = _pm_mapas_por_tren(sh, fila_enc, bloques)
 
     salidas = []
     for code, colmap in bloques:
@@ -473,17 +505,23 @@ def leer_planilla_maniobras(origen, hoja: str = "Planilla + Maniobras") -> list[
             tren = _pm_val(sh, r, colmap.get("Tren"))
             if not _pm_entero_pos(viaje) or hora is None or not _pm_entero_pos(tren):
                 continue  # filas de paso (sin viaje) o SV (sin hora) se omiten
+            tren = int(tren)
+            via = via_por_tren.get(tren, via_defecto)
             salidas.append({
-                "hora": hora, "origen": code,
-                "destino": _pm_destino(code, _pm_val(sh, r, colmap.get("Destino"))),
-                "tren": int(tren), "unidades": _pm_unidades(sh, r, colmap),
+                "hora": hora, "origen": code, "via": via,
+                "destino": _pm_destino(code, via, _pm_val(sh, r, colmap.get("Destino"))),
+                "tren": tren, "unidades": 2 if tren in trenes_multiple else 1,
             })
     salidas.sort(key=lambda d: (d["hora"], d["origen"]))
     return salidas
 
 
 def escribir_simulador_xls(salidas: list[dict], destino, constante: int = 406) -> None:
-    """Escribe el formato plano del simulador como .xls. `destino` puede ser ruta o un buffer."""
+    """Escribe el formato plano del simulador como .xls. `destino` puede ser ruta o un buffer.
+
+    `constante` es la capacidad de pasajeros POR UNIDAD (406). La última columna
+    guarda la capacidad total = constante * unidades (406 simple, 812 doble).
+    """
     import xlwt
     wb = xlwt.Workbook(encoding="utf-8")
     ws = wb.add_sheet("Hoja1")
@@ -491,13 +529,13 @@ def escribir_simulador_xls(salidas: list[dict], destino, constante: int = 406) -
     for i, s in enumerate(salidas):
         ws.write(i, 0, s["hora"] / 86400.0, estilo_hora)
         ws.write(i, 1, s["origen"])
-        ws.write(i, 2, s["unidades"])
+        ws.write(i, 2, s["via"])          # C · vía de salida
         ws.write(i, 3, s["destino"])
-        ws.write(i, 4, s["unidades"])
+        ws.write(i, 4, s["via"])          # E · vía de llegada
         ws.write(i, 5, s["destino"])
         ws.write(i, 6, "servicio")
         ws.write(i, 7, s["tren"])
-        ws.write(i, 8, constante)
+        ws.write(i, 8, constante * s["unidades"])   # capacidad (406 simple, 812 doble)
     wb.save(destino)
 
 

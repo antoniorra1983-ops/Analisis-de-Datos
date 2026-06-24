@@ -5,15 +5,12 @@ streamlit_app.py
 App web (Streamlit) del conversor **Planilla + Maniobras**.
 
 Sube el CSV del simulador, ajusta las opciones y descarga el Excel con el
-formato de dos terminales. Reutiliza toda la lógica de `planilla_maniobras.py`.
+formato de varias terminales (Puerto · El Belloto · Sargento Aldea · Limache).
+Reutiliza toda la lógica de `planilla_maniobras.py`.
 
 Ejecutar en local:
     pip install -r requirements.txt
     streamlit run streamlit_app.py
-
-Desplegar gratis en la nube:
-    Sube el repo a GitHub y publícalo en https://share.streamlit.io
-    (apuntando a este archivo, streamlit_app.py).
 """
 
 import datetime as dt
@@ -33,9 +30,8 @@ from planilla_maniobras import (
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 st.set_page_config(page_title="Planilla + Maniobras", page_icon="🚆", layout="wide")
-
 st.title("🚆 Planilla Horaria + Maniobras")
-st.caption("Convierte el CSV del simulador en una planilla de dos terminales (.xlsx).")
+st.caption("Convierte el CSV del simulador en una planilla de varias terminales (.xlsx).")
 
 
 # --------------------------------------------------------------------------- #
@@ -52,12 +48,14 @@ with st.sidebar:
 
     with st.expander("Avanzado · terminales y formato"):
         sep = st.text_input("Separador del CSV", value=";")
-        cod_puerto = st.text_input("Código estación Terminal Puerto", value="PUE")
-        cod_limache = st.text_input("Código estación Terminal Limache", value="LIM")
-        nombre_puerto = st.text_input("Rótulo columna izquierda", value="Terminal Puerto")
-        nombre_limache = st.text_input("Rótulo columna derecha", value="Terminal Limache")
-        track_puerto = st.number_input("trackID de Terminal Puerto", value=0, step=1)
-        track_limache = st.number_input("trackID de Terminal Limache", value=1, step=1)
+        cod_puerto = st.text_input("Código Terminal Puerto", value="PUE")
+        cod_limache = st.text_input("Código Terminal Limache", value="LIM")
+        nombre_puerto = st.text_input("Rótulo Terminal Puerto", value="Terminal Puerto")
+        nombre_limache = st.text_input("Rótulo Terminal Limache", value="Terminal Limache")
+        st.caption(
+            "Las columnas de **El Belloto** (BTO) y **Sargento Aldea** (SGA) "
+            "aparecen automáticamente si hay servicios que parten desde ellas."
+        )
         titulo = st.text_input("Título de la planilla",
                                value="Planilla Horaria + Maniobras — Simulador")
 
@@ -111,14 +109,13 @@ if archivo is None:
             "`tripID`, `trainID`, `trainTotalCapacity`, `trackID`, "
             "`stationName`, `arriveTime`, `leaveTime`\n\n"
             "Cada fila es una parada de un viaje; el primer y último registro "
-            "de cada `tripID` definen origen y destino."
+            "de cada `tripID` definen origen y destino. Cada viaje se ubica en "
+            "la columna de su estación de origen."
         )
     st.stop()
 
 cfg = Config(
     sep=sep,
-    track_puerto=int(track_puerto),
-    track_limache=int(track_limache),
     cod_puerto=cod_puerto,
     cod_limache=cod_limache,
     nombre_puerto=nombre_puerto,
@@ -133,21 +130,21 @@ cfg = Config(
 try:
     raw = archivo.getvalue()
     viajes = cargar_viajes(io.BytesIO(raw), cfg)
-    izq, der = construir_tablas(viajes, cfg)
+    cols, tablas = construir_tablas(viajes, cfg)
     hora_inicio = viajes["dep"].iloc[0]
 except Exception as exc:  # noqa: BLE001
     st.error(f"No se pudo procesar el archivo: {exc}")
     st.stop()
 
 # --- Resumen ---
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Viajes", len(viajes))
-m2.metric("Trenes", int(viajes["train"].nunique()))
-m3.metric("Filas Puerto", len(izq))
-m4.metric("Filas Limache", len(der))
+metric_cols = st.columns(2 + len(cols))
+metric_cols[0].metric("Viajes", len(viajes))
+metric_cols[1].metric("Trenes", int(viajes["train"].nunique()))
+for i, (c, t) in enumerate(zip(cols, tablas)):
+    metric_cols[2 + i].metric(c["nombre"], len(t))
 
 # --- Descarga ---
-wb = construir_workbook(izq, der, cfg, hora_inicio, archivo.name)
+wb = construir_workbook(cols, tablas, cfg, hora_inicio, archivo.name)
 buffer = io.BytesIO()
 wb.save(buffer)
 buffer.seek(0)
@@ -160,16 +157,12 @@ st.download_button(
     type="primary",
 )
 
-# --- Vista previa ---
+# --- Vista previa (una pestaña por terminal) ---
 st.subheader("Vista previa")
-col_p, col_l = st.columns(2)
-with col_p:
-    st.markdown(f"**{cfg.nombre_puerto}**")
-    st.dataframe(estilo(filas_a_df(izq, round_minutes)),
-                 hide_index=True, use_container_width=True, height=460)
-with col_l:
-    st.markdown(f"**{cfg.nombre_limache}**")
-    st.dataframe(estilo(filas_a_df(der, round_minutes)),
-                 hide_index=True, use_container_width=True, height=460)
+pestanas = st.tabs([f"{c['nombre']} ({len(t)})" for c, t in zip(cols, tablas)])
+for tab, c, t in zip(pestanas, cols, tablas):
+    with tab:
+        st.dataframe(estilo(filas_a_df(t, round_minutes)),
+                     hide_index=True, use_container_width=True, height=460)
 
 st.caption("EV = entrada a vía · RET = retorno · SV = sale de vía (estaciona)")

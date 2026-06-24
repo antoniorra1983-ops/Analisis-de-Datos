@@ -35,6 +35,47 @@ st.caption("Convierte el CSV del simulador en una planilla de varias terminales 
 
 
 # --------------------------------------------------------------------------- #
+# Procesamiento con caché: se calcula una sola vez por archivo + opciones.
+# Esto evita que al pulsar "Descargar" se recalcule todo y la página se caiga.
+# --------------------------------------------------------------------------- #
+@st.cache_data(show_spinner="Procesando…")
+def procesar(raw: bytes, nombre: str, sep: str, cod_puerto: str, cod_limache: str,
+             nombre_puerto: str, nombre_limache: str, multiple_threshold: int,
+             round_minutes: bool, maniobras: bool, train_prefix: str, titulo: str):
+    cfg = Config(
+        sep=sep, cod_puerto=cod_puerto, cod_limache=cod_limache,
+        nombre_puerto=nombre_puerto, nombre_limache=nombre_limache,
+        multiple_threshold=multiple_threshold, round_minutes=round_minutes,
+        maniobras=maniobras, train_prefix=train_prefix, titulo=titulo,
+    )
+    viajes = cargar_viajes(io.BytesIO(raw), cfg)
+    cols, tablas = construir_tablas(viajes, cfg)
+    wb = construir_workbook(cols, tablas, cfg, viajes["dep"].iloc[0], nombre)
+    buf = io.BytesIO()
+    wb.save(buf)
+    resumen = dict(viajes=len(viajes), trenes=int(viajes["train"].nunique()))
+    return cols, tablas, buf.getvalue(), resumen
+
+
+def _fmt_time(v, redondear: bool) -> str:
+    if v is None or v == "":
+        return ""
+    if isinstance(v, dt.time):
+        return v.strftime("%H:%M" if redondear else "%H:%M:%S")
+    return str(v)
+
+
+def filas_a_df(filas: list[list], redondear: bool) -> pd.DataFrame:
+    datos = []
+    for f in filas:
+        fila = list(f)
+        fila[2] = _fmt_time(fila[2], redondear)  # Partida
+        fila[4] = _fmt_time(fila[4], redondear)  # Inter.
+        datos.append(["" if x is None else x for x in fila])
+    return pd.DataFrame(datos, columns=COLUMNAS)
+
+
+# --------------------------------------------------------------------------- #
 # Opciones (barra lateral)
 # --------------------------------------------------------------------------- #
 with st.sidebar:
@@ -61,39 +102,6 @@ with st.sidebar:
 
 
 # --------------------------------------------------------------------------- #
-# Utilidades de presentación
-# --------------------------------------------------------------------------- #
-def _fmt_time(v, redondear: bool) -> str:
-    if v is None or v == "":
-        return ""
-    if isinstance(v, dt.time):
-        return v.strftime("%H:%M" if redondear else "%H:%M:%S")
-    return str(v)
-
-
-def filas_a_df(filas: list[list], redondear: bool) -> pd.DataFrame:
-    datos = []
-    for f in filas:
-        fila = list(f)
-        fila[2] = _fmt_time(fila[2], redondear)  # Partida
-        fila[4] = _fmt_time(fila[4], redondear)  # Inter.
-        datos.append(fila)
-    return pd.DataFrame(datos, columns=COLUMNAS)
-
-
-def estilo(df: pd.DataFrame):
-    """Colorea EV (verde) y SV (gris), igual que el Excel."""
-    def color(row):
-        man = row["Man."]
-        if man == "EV":
-            return ["background-color: #E2EFDA"] * len(row)
-        if man == "SV":
-            return ["background-color: #F2F2F2; color: #777"] * len(row)
-        return [""] * len(row)
-    return df.style.apply(color, axis=1)
-
-
-# --------------------------------------------------------------------------- #
 # Carga y procesamiento
 # --------------------------------------------------------------------------- #
 archivo = st.file_uploader("Sube el CSV del simulador", type=["csv"])
@@ -109,29 +117,16 @@ if archivo is None:
             "`tripID`, `trainID`, `trainTotalCapacity`, `trackID`, "
             "`stationName`, `arriveTime`, `leaveTime`\n\n"
             "Cada fila es una parada de un viaje; el primer y último registro "
-            "de cada `tripID` definen origen y destino. Cada viaje se ubica en "
-            "la columna de su estación de origen."
+            "de cada `tripID` definen origen y destino."
         )
     st.stop()
 
-cfg = Config(
-    sep=sep,
-    cod_puerto=cod_puerto,
-    cod_limache=cod_limache,
-    nombre_puerto=nombre_puerto,
-    nombre_limache=nombre_limache,
-    multiple_threshold=int(multiple_threshold),
-    round_minutes=round_minutes,
-    maniobras=maniobras,
-    train_prefix=train_prefix.strip(),
-    titulo=titulo,
-)
-
 try:
-    raw = archivo.getvalue()
-    viajes = cargar_viajes(io.BytesIO(raw), cfg)
-    cols, tablas = construir_tablas(viajes, cfg)
-    hora_inicio = viajes["dep"].iloc[0]
+    cols, tablas, xlsx_bytes, resumen = procesar(
+        archivo.getvalue(), archivo.name, sep, cod_puerto, cod_limache,
+        nombre_puerto, nombre_limache, int(multiple_threshold),
+        round_minutes, maniobras, train_prefix.strip(), titulo,
+    )
 except Exception as exc:  # noqa: BLE001
     st.error(f"No se pudo procesar el archivo: {exc}")
     st.stop()
@@ -146,33 +141,30 @@ if not cols or not isinstance(cols[0], dict):
     )
     st.stop()
 
-# --- Resumen ---
-metric_cols = st.columns(2 + len(cols))
-metric_cols[0].metric("Viajes", len(viajes))
-metric_cols[1].metric("Trenes", int(viajes["train"].nunique()))
-for i, (c, t) in enumerate(zip(cols, tablas)):
-    metric_cols[2 + i].metric(c["nombre"], len(t))
-
-# --- Descarga ---
-wb = construir_workbook(cols, tablas, cfg, hora_inicio, archivo.name)
-buffer = io.BytesIO()
-wb.save(buffer)
-buffer.seek(0)
-
+# --- Descarga (usa los bytes ya calculados; no se regenera al pulsar) ---
 st.download_button(
     label="⬇️  Descargar Excel (.xlsx)",
-    data=buffer,
+    data=xlsx_bytes,
     file_name="Planilla_Maniobras.xlsx",
     mime=XLSX_MIME,
     type="primary",
 )
 
-# --- Vista previa (una pestaña por terminal) ---
+# --- Resumen ---
+metric_cols = st.columns(2 + len(cols))
+metric_cols[0].metric("Viajes", resumen["viajes"])
+metric_cols[1].metric("Trenes", resumen["trenes"])
+for i, (c, t) in enumerate(zip(cols, tablas)):
+    metric_cols[2 + i].metric(c["nombre"], len(t))
+
+# --- Vista previa (tablas simples, livianas; una pestaña por terminal) ---
 st.subheader("Vista previa")
+st.caption(
+    "EV = entrada a vía · RET = retorno · SV = sale de vía (estaciona). "
+    "El Excel descargado incluye el resaltado de color de EV y SV."
+)
 pestanas = st.tabs([f"{c['nombre']} ({len(t)})" for c, t in zip(cols, tablas)])
 for tab, c, t in zip(pestanas, cols, tablas):
     with tab:
-        st.dataframe(estilo(filas_a_df(t, round_minutes)),
+        st.dataframe(filas_a_df(t, round_minutes),
                      hide_index=True, use_container_width=True, height=460)
-
-st.caption("EV = entrada a vía · RET = retorno · SV = sale de vía (estaciona)")

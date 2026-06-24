@@ -161,7 +161,8 @@ def _procesar_pm(raw, hoja, constante):
 def modo_planilla_a_simulador():
     with st.sidebar:
         hoja = st.text_input("Nombre de la hoja a leer", value="Planilla + Maniobras")
-        constante = st.number_input("Valor de la última columna", min_value=0, value=406, step=1)
+        constante = st.number_input("Capacidad por unidad (simple)", min_value=0, value=406, step=1,
+                                    help="406 por unidad: 406 si es simple, 812 si es doble.")
 
     archivo = st.file_uploader("Sube la Planilla + Maniobras (.xls)", type=["xls"], key="xls")
     if archivo is None:
@@ -171,6 +172,13 @@ def modo_planilla_a_simulador():
 
     try:
         salidas, xls_bytes = _procesar_pm(archivo.getvalue(), hoja, int(constante))
+    except ModuleNotFoundError as exc:
+        st.error(
+            f"Falta una librería en el servidor: **{exc.name}**. Tu "
+            "`requirements.txt` debe incluir `xlrd` y `xlwt`. Súbelo a GitHub y "
+            "reinicia la app (*Manage app → Reboot*) para que se instalen."
+        )
+        st.stop()
     except Exception as exc:  # noqa: BLE001
         st.error(f"No se pudo leer la planilla: {exc}")
         st.stop()
@@ -192,11 +200,13 @@ def modo_planilla_a_simulador():
 
     st.subheader("Vista previa")
     df = pd.DataFrame([{
-        "Hora": hhmmss(s["hora"]), "Origen": s["origen"], "Unid.": s["unidades"],
+        "Hora": hhmmss(s["hora"]), "Origen": s["origen"], "Vía": s["via"],
         "Destino": s["destino"], "Tren": s["tren"],
+        "Cap.": int(constante) * s["unidades"],
     } for s in salidas])
     st.dataframe(df, hide_index=True, use_container_width=True, height=460)
-    st.caption("El .xls descargado tiene el formato completo de 9 columnas (estilo Planillaprueba2).")
+    st.caption("El .xls descargado tiene el formato completo de 9 columnas (estilo Planillaprueba2): "
+               "la vía va en las columnas C y E, y la capacidad (406 simple · 812 doble) en la última.")
 
 
 # --------------------------------------------------------------------------- #

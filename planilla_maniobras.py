@@ -222,9 +222,13 @@ def construir_tabla(viajes: pd.DataFrame, sv: pd.DataFrame, track: int,
 # --------------------------------------------------------------------------- #
 # 4) Escribir el Excel con formato
 # --------------------------------------------------------------------------- #
-def escribir_excel(izq: list[list], der: list[list], out_path: str,
-                   cfg: Config, hora_inicio: str, origen_archivo: str) -> None:
-    """Genera el .xlsx con las dos terminales lado a lado y estilo profesional."""
+def construir_workbook(izq: list[list], der: list[list],
+                       cfg: Config, hora_inicio: str, origen_archivo: str) -> Workbook:
+    """Arma el libro Excel (en memoria) con las dos terminales y estilo profesional.
+
+    Devuelve un openpyxl.Workbook; quien llame decide si guardarlo en disco
+    (escribir_excel) o en un buffer en memoria (p. ej. para descargar en Streamlit).
+    """
     NAVY, GRIS, VERDE = "1F3864", "F2F2F2", "E2EFDA"
     L0, R0 = 1, 12  # columna inicial izquierda / derecha (col 11 = separador)
 
@@ -310,25 +314,36 @@ def escribir_excel(izq: list[list], der: list[list], out_path: str,
     ws.freeze_panes = "A7"
     ws.sheet_view.showGridLines = False
 
+    return wb
+
+
+def escribir_excel(izq: list[list], der: list[list], out_path: str,
+                   cfg: Config, hora_inicio: str, origen_archivo: str) -> None:
+    """Guarda el libro en disco (versión de línea de comandos)."""
+    wb = construir_workbook(izq, der, cfg, hora_inicio, origen_archivo)
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     wb.save(out_path)
+
+
+def construir_tablas(viajes: pd.DataFrame, cfg: Config) -> tuple[list[list], list[list]]:
+    """A partir del DataFrame de viajes, arma las filas de ambas terminales."""
+    if cfg.maniobras:
+        viajes = asignar_maniobras(viajes)
+    else:
+        viajes = viajes.assign(man="")
+    sv = fines_de_servicio(viajes, cfg) if cfg.maniobras else pd.DataFrame(columns=["side"])
+    izq = construir_tabla(viajes, sv, cfg.track_puerto, cfg.cod_puerto, cfg.cod_limache, cfg)
+    der = construir_tabla(viajes, sv, cfg.track_limache, cfg.cod_limache, cfg.cod_puerto, cfg)
+    return izq, der
 
 
 # --------------------------------------------------------------------------- #
 # Orquestador
 # --------------------------------------------------------------------------- #
 def convertir(csv_path: str, out_path: str, cfg: Config) -> dict:
-    """Pipeline completo CSV -> XLSX. Devuelve un pequeño resumen."""
+    """Pipeline completo CSV -> XLSX en disco. Devuelve un pequeño resumen."""
     viajes = cargar_viajes(csv_path, cfg)
-    if cfg.maniobras:
-        viajes = asignar_maniobras(viajes)
-    else:
-        viajes = viajes.assign(man="")
-    sv = fines_de_servicio(viajes, cfg) if cfg.maniobras else pd.DataFrame(columns=["side"])
-
-    izq = construir_tabla(viajes, sv, cfg.track_puerto, cfg.cod_puerto, cfg.cod_limache, cfg)
-    der = construir_tabla(viajes, sv, cfg.track_limache, cfg.cod_limache, cfg.cod_puerto, cfg)
-
+    izq, der = construir_tablas(viajes, cfg)
     hora_inicio = viajes["dep"].iloc[0]
     escribir_excel(izq, der, out_path, cfg, hora_inicio, os.path.basename(csv_path))
 

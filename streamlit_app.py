@@ -2,11 +2,13 @@
 streamlit_app.py
 ================
 
-App web (Streamlit) del conversor **Planilla + Maniobras**.
+App web (Streamlit) del conversor **Planilla + Maniobras** — una sola
+herramienta con dos modos:
 
-Sube el CSV del simulador, ajusta las opciones y descarga el Excel con el
-formato de varias terminales (Puerto · El Belloto · Sargento Aldea · Limache).
-Reutiliza toda la lógica de `planilla_maniobras.py`.
+  1) Simulador → Planilla + Maniobras   (CSV del simulador → Excel .xlsx)
+  2) Planilla + Maniobras → Simulador   (.xls Planilla+Maniobras → .xls entrada)
+
+Toda la lógica vive en `planilla_maniobras.py`.
 
 Ejecutar en local:
     pip install -r requirements.txt
@@ -26,23 +28,45 @@ from planilla_maniobras import (
     cargar_viajes,
     construir_tablas,
     construir_workbook,
+    leer_planilla_maniobras,
+    simulador_a_bytes,
 )
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+XLS_MIME = "application/vnd.ms-excel"
+
+MODO_1 = "Simulador → Planilla + Maniobras  (CSV → Excel)"
+MODO_2 = "Planilla + Maniobras → Simulador  (.xls → .xls)"
 
 st.set_page_config(page_title="Planilla + Maniobras", page_icon="🚆", layout="wide")
 st.title("🚆 Planilla Horaria + Maniobras")
-st.caption("Convierte el CSV del simulador en una planilla de varias terminales (.xlsx).")
 
 
 # --------------------------------------------------------------------------- #
-# Procesamiento con caché: se calcula una sola vez por archivo + opciones.
-# Esto evita que al pulsar "Descargar" se recalcule todo y la página se caiga.
+# Utilidades comunes
+# --------------------------------------------------------------------------- #
+def enlace_descarga(data: bytes, filename: str, mime: str, etiqueta: str) -> str:
+    """Enlace de descarga que abre en pestaña nueva (no corta la sesión en Safari iPhone)."""
+    b64 = base64.b64encode(data).decode()
+    return (
+        f'<a href="data:{mime};base64,{b64}" download="{filename}" target="_blank" '
+        f'rel="noopener" style="display:inline-block;padding:0.55rem 1.3rem;'
+        f'background-color:#1F3864;color:#ffffff;border-radius:0.5rem;'
+        f'text-decoration:none;font-weight:600;font-family:sans-serif;">{etiqueta}</a>'
+    )
+
+
+def hhmmss(seg: int) -> str:
+    return f"{seg // 3600:02d}:{(seg % 3600) // 60:02d}:{seg % 60:02d}"
+
+
+# --------------------------------------------------------------------------- #
+# MODO 1 · Simulador → Planilla + Maniobras
 # --------------------------------------------------------------------------- #
 @st.cache_data(show_spinner="Procesando…")
-def procesar(raw: bytes, nombre: str, sep: str, cod_puerto: str, cod_limache: str,
-             nombre_puerto: str, nombre_limache: str, multiple_threshold: int,
-             round_minutes: bool, maniobras: bool, train_prefix: str, titulo: str):
+def _procesar_csv(raw, nombre, sep, cod_puerto, cod_limache, nombre_puerto,
+                  nombre_limache, multiple_threshold, round_minutes, maniobras,
+                  train_prefix, titulo):
     cfg = Config(
         sep=sep, cod_puerto=cod_puerto, cod_limache=cod_limache,
         nombre_puerto=nombre_puerto, nombre_limache=nombre_limache,
@@ -52,142 +76,141 @@ def procesar(raw: bytes, nombre: str, sep: str, cod_puerto: str, cod_limache: st
     viajes = cargar_viajes(io.BytesIO(raw), cfg)
     cols, tablas = construir_tablas(viajes, cfg)
     wb = construir_workbook(cols, tablas, cfg, viajes["dep"].iloc[0], nombre)
-    buf = io.BytesIO()
-    wb.save(buf)
-    resumen = dict(viajes=len(viajes), trenes=int(viajes["train"].nunique()))
-    return cols, tablas, buf.getvalue(), resumen
+    buf = io.BytesIO(); wb.save(buf)
+    return cols, tablas, buf.getvalue(), dict(viajes=len(viajes), trenes=int(viajes["train"].nunique()))
 
 
-def _fmt_time(v, redondear: bool) -> str:
+def _fmt_time(v, redondear):
     if v is None or v == "":
         return ""
-    if isinstance(v, dt.time):
-        return v.strftime("%H:%M" if redondear else "%H:%M:%S")
-    return str(v)
+    return v.strftime("%H:%M" if redondear else "%H:%M:%S") if isinstance(v, dt.time) else str(v)
 
 
-def filas_a_df(filas: list[list], redondear: bool) -> pd.DataFrame:
+def _filas_a_df(filas, redondear):
     datos = []
     for f in filas:
         fila = list(f)
-        fila[2] = _fmt_time(fila[2], redondear)  # Partida
-        fila[4] = _fmt_time(fila[4], redondear)  # Inter.
+        fila[2] = _fmt_time(fila[2], redondear)
+        fila[4] = _fmt_time(fila[4], redondear)
         datos.append(["" if x is None else x for x in fila])
     return pd.DataFrame(datos, columns=COLUMNAS)
 
 
+def modo_csv_a_planilla():
+    with st.sidebar:
+        maniobras = st.checkbox("Incluir maniobras (EV/RET/SV)", value=True)
+        round_minutes = st.checkbox("Redondear horas al minuto", value=False)
+        multiple_threshold = st.number_input("Capacidad para «Múltiple» ≥", min_value=1, value=400, step=50)
+        train_prefix = st.text_input("Prefijo de tren", value="", placeholder="(ninguno)")
+        with st.expander("Avanzado · terminales"):
+            sep = st.text_input("Separador del CSV", value=";")
+            cod_puerto = st.text_input("Código Terminal Puerto", value="PUE")
+            cod_limache = st.text_input("Código Terminal Limache", value="LIM")
+            nombre_puerto = st.text_input("Rótulo Terminal Puerto", value="Terminal Puerto")
+            nombre_limache = st.text_input("Rótulo Terminal Limache", value="Terminal Limache")
+            titulo = st.text_input("Título", value="Planilla Horaria + Maniobras — Simulador")
+
+    archivo = st.file_uploader("Sube el CSV del simulador", type=["csv"], key="csv")
+    if archivo is None:
+        st.info("Sube el CSV del simulador (`Planilla_Simulador.csv`) para generar la planilla.")
+        st.stop()
+
+    try:
+        cols, tablas, xlsx_bytes, resumen = _procesar_csv(
+            archivo.getvalue(), archivo.name, sep, cod_puerto, cod_limache,
+            nombre_puerto, nombre_limache, int(multiple_threshold),
+            round_minutes, maniobras, train_prefix.strip(), titulo,
+        )
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"No se pudo procesar el archivo: {exc}")
+        st.stop()
+
+    if not cols or not isinstance(cols[0], dict):
+        st.error("`planilla_maniobras.py` está desactualizado en el repositorio. "
+                 "Sube la última versión de los archivos `.py` y reinicia la app.")
+        st.stop()
+
+    st.markdown(enlace_descarga(xlsx_bytes, "Planilla_Maniobras.xlsx", XLSX_MIME,
+                                "⬇️  Descargar Excel (.xlsx)"), unsafe_allow_html=True)
+    st.caption("En iPhone se abre en pestaña nueva y queda en Archivos → Descargas; la app no se cierra.")
+
+    mc = st.columns(2 + len(cols))
+    mc[0].metric("Viajes", resumen["viajes"])
+    mc[1].metric("Trenes", resumen["trenes"])
+    for i, (c, t) in enumerate(zip(cols, tablas)):
+        mc[2 + i].metric(c["nombre"], len(t))
+
+    st.subheader("Vista previa")
+    st.caption("EV = entrada a vía · RET = retorno · SV = sale de vía. El Excel incluye el color de EV/SV.")
+    pestanas = st.tabs([f"{c['nombre']} ({len(t)})" for c, t in zip(cols, tablas)])
+    for tab, c, t in zip(pestanas, cols, tablas):
+        with tab:
+            st.dataframe(_filas_a_df(t, round_minutes), hide_index=True,
+                         use_container_width=True, height=460)
+
+
 # --------------------------------------------------------------------------- #
-# Opciones (barra lateral)
+# MODO 2 · Planilla + Maniobras → entrada del simulador
+# --------------------------------------------------------------------------- #
+@st.cache_data(show_spinner="Convirtiendo…")
+def _procesar_pm(raw, hoja, constante):
+    salidas = leer_planilla_maniobras(raw, hoja)
+    return salidas, simulador_a_bytes(salidas, constante)
+
+
+def modo_planilla_a_simulador():
+    with st.sidebar:
+        hoja = st.text_input("Nombre de la hoja a leer", value="Planilla + Maniobras")
+        constante = st.number_input("Valor de la última columna", min_value=0, value=406, step=1)
+
+    archivo = st.file_uploader("Sube la Planilla + Maniobras (.xls)", type=["xls"], key="xls")
+    if archivo is None:
+        st.info("Sube el `.xls` de la Planilla + Maniobras (laboral o sábado) para generar la "
+                "entrada del simulador en formato plano (.xls).")
+        st.stop()
+
+    try:
+        salidas, xls_bytes = _procesar_pm(archivo.getvalue(), hoja, int(constante))
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"No se pudo leer la planilla: {exc}")
+        st.stop()
+
+    if not salidas:
+        st.warning("No se encontraron servicios. ¿La hoja se llama distinto? Ajusta el nombre en la barra lateral.")
+        st.stop()
+
+    st.markdown(enlace_descarga(xls_bytes, "Entrada_Simulador.xls", XLS_MIME,
+                                "⬇️  Descargar entrada del simulador (.xls)"), unsafe_allow_html=True)
+    st.caption("En iPhone se abre en pestaña nueva y queda en Archivos → Descargas; la app no se cierra.")
+
+    from collections import Counter
+    por_origen = Counter(s["origen"] for s in salidas)
+    mc = st.columns(1 + len(por_origen))
+    mc[0].metric("Servicios", len(salidas))
+    for i, (org, n) in enumerate(sorted(por_origen.items())):
+        mc[1 + i].metric(f"Salen de {org}", n)
+
+    st.subheader("Vista previa")
+    df = pd.DataFrame([{
+        "Hora": hhmmss(s["hora"]), "Origen": s["origen"], "Unid.": s["unidades"],
+        "Destino": s["destino"], "Tren": s["tren"],
+    } for s in salidas])
+    st.dataframe(df, hide_index=True, use_container_width=True, height=460)
+    st.caption("El .xls descargado tiene el formato completo de 9 columnas (estilo Planillaprueba2).")
+
+
+# --------------------------------------------------------------------------- #
+# Selector de modo
 # --------------------------------------------------------------------------- #
 with st.sidebar:
-    st.header("Opciones")
-    maniobras = st.checkbox("Incluir maniobras (EV/RET/SV)", value=True)
-    round_minutes = st.checkbox("Redondear horas al minuto", value=False)
-    multiple_threshold = st.number_input(
-        "Capacidad para marcar «Múltiple» ≥", min_value=1, value=400, step=50
-    )
-    train_prefix = st.text_input("Prefijo de tren", value="", placeholder="(ninguno)")
+    st.header("Modo")
+    modo = st.radio("¿Qué quieres hacer?", [MODO_1, MODO_2], label_visibility="collapsed")
+    st.divider()
+    st.subheader("Opciones")
 
-    with st.expander("Avanzado · terminales y formato"):
-        sep = st.text_input("Separador del CSV", value=";")
-        cod_puerto = st.text_input("Código Terminal Puerto", value="PUE")
-        cod_limache = st.text_input("Código Terminal Limache", value="LIM")
-        nombre_puerto = st.text_input("Rótulo Terminal Puerto", value="Terminal Puerto")
-        nombre_limache = st.text_input("Rótulo Terminal Limache", value="Terminal Limache")
-        st.caption(
-            "Las columnas de **El Belloto** (BTO) y **Sargento Aldea** (SGA) "
-            "aparecen automáticamente si hay servicios que parten desde ellas."
-        )
-        titulo = st.text_input("Título de la planilla",
-                               value="Planilla Horaria + Maniobras — Simulador")
+st.caption(MODO_1 if modo == MODO_1 else MODO_2)
 
-
-# --------------------------------------------------------------------------- #
-# Carga y procesamiento
-# --------------------------------------------------------------------------- #
-archivo = st.file_uploader("Sube el CSV del simulador", type=["csv"])
-
-if archivo is None:
-    st.info(
-        "Sube un archivo CSV para comenzar. El procesamiento ocurre en el "
-        "servidor de la app; el archivo no se comparte con terceros."
-    )
-    with st.expander("¿Qué formato debe tener el CSV?"):
-        st.markdown(
-            "Separado por `;`, con (al menos) estas columnas:\n\n"
-            "`tripID`, `trainID`, `trainTotalCapacity`, `trackID`, "
-            "`stationName`, `arriveTime`, `leaveTime`\n\n"
-            "Cada fila es una parada de un viaje; el primer y último registro "
-            "de cada `tripID` definen origen y destino."
-        )
-    st.stop()
-
-try:
-    cols, tablas, xlsx_bytes, resumen = procesar(
-        archivo.getvalue(), archivo.name, sep, cod_puerto, cod_limache,
-        nombre_puerto, nombre_limache, int(multiple_threshold),
-        round_minutes, maniobras, train_prefix.strip(), titulo,
-    )
-except Exception as exc:  # noqa: BLE001
-    st.error(f"No se pudo procesar el archivo: {exc}")
-    st.stop()
-
-# Detecta un planilla_maniobras.py desactualizado en el repositorio.
-if not cols or not isinstance(cols[0], dict):
-    st.error(
-        "El archivo **planilla_maniobras.py** del repositorio está "
-        "desactualizado (no coincide con esta versión de la app). Sube la "
-        "última versión de **ambos** archivos `.py` y reinicia la app "
-        "(*Manage app → Reboot*)."
-    )
-    st.stop()
-
-# --- Descarga ---
-# En vez de st.download_button (que en Safari de iPhone interrumpe la conexión
-# con el servidor y obliga a reiniciar la app), usamos un enlace con el archivo
-# incrustado que se abre en una pestaña nueva: la pestaña de la app queda intacta.
-b64 = base64.b64encode(xlsx_bytes).decode()
-enlace = (
-    f'<a href="data:{XLSX_MIME};base64,{b64}" '
-    f'download="Planilla_Maniobras.xlsx" target="_blank" rel="noopener" '
-    f'style="display:inline-block;padding:0.55rem 1.3rem;background-color:#1F3864;'
-    f'color:#ffffff;border-radius:0.5rem;text-decoration:none;font-weight:600;'
-    f'font-family:sans-serif;">⬇️  Descargar Excel (.xlsx)</a>'
-)
-st.markdown(enlace, unsafe_allow_html=True)
-st.caption(
-    "En iPhone/iPad se abre en una pestaña nueva y el archivo queda en "
-    "**Archivos → Descargas** (ábrelo con Numbers, Excel o Google Sheets). "
-    "La app no se cierra: vuelve a su pestaña cuando termines."
-)
-
-with st.expander("¿El enlace no descarga? (descarga estándar)"):
-    st.caption(
-        "Este es el botón clásico de descarga. Funciona en computador, pero en "
-        "Safari de iPhone puede interrumpir la app (tendrías que recargarla)."
-    )
-    st.download_button(
-        label="Descargar (método estándar)",
-        data=xlsx_bytes,
-        file_name="Planilla_Maniobras.xlsx",
-        mime=XLSX_MIME,
-    )
-
-# --- Resumen ---
-metric_cols = st.columns(2 + len(cols))
-metric_cols[0].metric("Viajes", resumen["viajes"])
-metric_cols[1].metric("Trenes", resumen["trenes"])
-for i, (c, t) in enumerate(zip(cols, tablas)):
-    metric_cols[2 + i].metric(c["nombre"], len(t))
-
-# --- Vista previa (tablas simples, livianas; una pestaña por terminal) ---
-st.subheader("Vista previa")
-st.caption(
-    "EV = entrada a vía · RET = retorno · SV = sale de vía (estaciona). "
-    "El Excel descargado incluye el resaltado de color de EV y SV."
-)
-pestanas = st.tabs([f"{c['nombre']} ({len(t)})" for c, t in zip(cols, tablas)])
-for tab, c, t in zip(pestanas, cols, tablas):
-    with tab:
-        st.dataframe(filas_a_df(t, round_minutes),
-                     hide_index=True, use_container_width=True, height=460)
+if modo == MODO_1:
+    modo_csv_a_planilla()
+else:
+    modo_planilla_a_simulador()

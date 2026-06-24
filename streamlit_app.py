@@ -13,6 +13,7 @@ Ejecutar en local:
     streamlit run streamlit_app.py
 """
 
+import base64
 import datetime as dt
 import io
 
@@ -141,14 +142,36 @@ if not cols or not isinstance(cols[0], dict):
     )
     st.stop()
 
-# --- Descarga (usa los bytes ya calculados; no se regenera al pulsar) ---
-st.download_button(
-    label="⬇️  Descargar Excel (.xlsx)",
-    data=xlsx_bytes,
-    file_name="Planilla_Maniobras.xlsx",
-    mime=XLSX_MIME,
-    type="primary",
+# --- Descarga ---
+# En vez de st.download_button (que en Safari de iPhone interrumpe la conexión
+# con el servidor y obliga a reiniciar la app), usamos un enlace con el archivo
+# incrustado que se abre en una pestaña nueva: la pestaña de la app queda intacta.
+b64 = base64.b64encode(xlsx_bytes).decode()
+enlace = (
+    f'<a href="data:{XLSX_MIME};base64,{b64}" '
+    f'download="Planilla_Maniobras.xlsx" target="_blank" rel="noopener" '
+    f'style="display:inline-block;padding:0.55rem 1.3rem;background-color:#1F3864;'
+    f'color:#ffffff;border-radius:0.5rem;text-decoration:none;font-weight:600;'
+    f'font-family:sans-serif;">⬇️  Descargar Excel (.xlsx)</a>'
 )
+st.markdown(enlace, unsafe_allow_html=True)
+st.caption(
+    "En iPhone/iPad se abre en una pestaña nueva y el archivo queda en "
+    "**Archivos → Descargas** (ábrelo con Numbers, Excel o Google Sheets). "
+    "La app no se cierra: vuelve a su pestaña cuando termines."
+)
+
+with st.expander("¿El enlace no descarga? (descarga estándar)"):
+    st.caption(
+        "Este es el botón clásico de descarga. Funciona en computador, pero en "
+        "Safari de iPhone puede interrumpir la app (tendrías que recargarla)."
+    )
+    st.download_button(
+        label="Descargar (método estándar)",
+        data=xlsx_bytes,
+        file_name="Planilla_Maniobras.xlsx",
+        mime=XLSX_MIME,
+    )
 
 # --- Resumen ---
 metric_cols = st.columns(2 + len(cols))

@@ -416,5 +416,23 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _corriendo_en_streamlit() -> bool:
+    """True si el módulo se está ejecutando dentro de una app Streamlit."""
+    try:
+        from streamlit.runtime import exists
+        return exists()
+    except Exception:
+        try:
+            from streamlit.runtime.scriptrunner import get_script_run_ctx
+            return get_script_run_ctx() is not None
+        except Exception:
+            return False
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Si alguien apunta Streamlit a este archivo por error, mostramos la app
+    # en lugar de fallar con el error de línea de comandos ("required: input").
+    if _corriendo_en_streamlit():
+        import streamlit_app  # noqa: F401  -> renderiza la interfaz completa
+    else:
+        raise SystemExit(main())

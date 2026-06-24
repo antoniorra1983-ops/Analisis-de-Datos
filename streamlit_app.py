@@ -136,6 +136,16 @@ except Exception as exc:  # noqa: BLE001
     st.error(f"No se pudo procesar el archivo: {exc}")
     st.stop()
 
+# Detecta un planilla_maniobras.py desactualizado en el repositorio.
+if not cols or not isinstance(cols[0], dict):
+    st.error(
+        "El archivo **planilla_maniobras.py** del repositorio está "
+        "desactualizado (no coincide con esta versión de la app). Sube la "
+        "última versión de **ambos** archivos `.py` y reinicia la app "
+        "(*Manage app → Reboot*)."
+    )
+    st.stop()
+
 # --- Resumen ---
 metric_cols = st.columns(2 + len(cols))
 metric_cols[0].metric("Viajes", len(viajes))

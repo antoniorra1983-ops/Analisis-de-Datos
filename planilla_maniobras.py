@@ -462,15 +462,18 @@ def _pm_a_entero(v):
 def _pm_mapas_por_tren(sh, fila_enc, bloques):
     """Recorre toda la hoja y arma dos mapas por tren:
        - via_por_tren: el valor (fijo) de la columna Destino de ese tren -> es la vía.
-       - trenes_multiple: trenes con 'Múltiple' en la columna M en cualquier fila."""
+       - trenes_multiple: trenes con 'Múltiple' en CUALQUIER columna de alguna de sus
+         filas (en estos archivos la marca suele ir en la columna Obs., no en M)."""
     via_por_tren: dict[int, int] = {}
     trenes_multiple: set[int] = set()
     for _code, colmap in bloques:
+        cols = list(colmap.values())
+        c_ini, c_fin = min(cols), max(cols)
         for r in range(fila_enc + 1, sh.nrows):
             tren = _pm_a_entero(_pm_val(sh, r, colmap.get("Tren")))
             if tren is None or tren <= 0:
                 continue
-            if "ltiple" in str(_pm_val(sh, r, colmap.get("M"))).lower():
+            if any("ltiple" in str(_pm_val(sh, r, c)).lower() for c in range(c_ini, c_fin + 1)):
                 trenes_multiple.add(tren)
             via = _pm_a_entero(_pm_val(sh, r, colmap.get("Destino")))
             if tren not in via_por_tren and via is not None:

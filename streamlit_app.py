@@ -18,6 +18,7 @@ Ejecutar en local:
 import datetime as dt
 import io
 
+import base64
 import pandas as pd
 import streamlit as st
 
@@ -46,6 +47,18 @@ st.title("🚆 Planilla Horaria + Maniobras")
 # --------------------------------------------------------------------------- #
 # Utilidades comunes
 # --------------------------------------------------------------------------- #
+def enlace_descarga(data: bytes, filename: str, mime: str, etiqueta: str) -> str:
+    """Enlace de descarga (abre en pestaña nueva). Funciona en Safari de iPhone
+    sin cerrar la sesión, a diferencia del botón nativo."""
+    b64 = base64.b64encode(data).decode()
+    return (
+        f'<a href="data:{mime};base64,{b64}" download="{filename}" target="_blank" '
+        f'rel="noopener" style="display:inline-block;padding:0.55rem 1.3rem;'
+        f'background-color:#1F3864;color:#ffffff;border-radius:0.5rem;'
+        f'text-decoration:none;font-weight:600;font-family:sans-serif;">{etiqueta}</a>'
+    )
+
+
 def hhmmss(seg: int) -> str:
     return f"{seg // 3600:02d}:{(seg % 3600) // 60:02d}:{seg % 60:02d}"
 
@@ -120,8 +133,9 @@ def modo_csv_a_planilla():
                  "Sube la última versión de los archivos `.py` y reinicia la app.")
         return
 
-    st.download_button("⬇️  Descargar Excel (.xlsx)", data=xlsx_bytes,
-                       file_name="Planilla_Maniobras.xlsx", mime=XLSX_MIME, type="primary")
+    st.markdown(enlace_descarga(xlsx_bytes, "Planilla_Maniobras.xlsx", XLSX_MIME,
+                                "⬇️  Descargar Excel (.xlsx)"), unsafe_allow_html=True)
+    st.caption("En iPhone la descarga se abre en una pestaña nueva; desde ahí la guardas. La app no se cierra.")
 
     mc = st.columns(2 + len(cols))
     mc[0].metric("Viajes", resumen["viajes"])
@@ -201,8 +215,9 @@ def modo_planilla_a_simulador():
                    "Prueba a elegir otra hoja en el desplegable.")
         return
 
-    st.download_button("⬇️  Descargar entrada del simulador (.xls)", data=xls_bytes,
-                       file_name="Entrada_Simulador.xls", mime=XLS_MIME, type="primary")
+    st.markdown(enlace_descarga(xls_bytes, "Entrada_Simulador.xls", XLS_MIME,
+                                "⬇️  Descargar entrada del simulador (.xls)"), unsafe_allow_html=True)
+    st.caption("En iPhone la descarga se abre en una pestaña nueva; desde ahí la guardas. La app no se cierra.")
 
     from collections import Counter
     por_origen = Counter(s["origen"] for s in salidas)

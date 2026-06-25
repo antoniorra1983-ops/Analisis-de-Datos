@@ -575,21 +575,29 @@ def escribir_simulador_xls(salidas: list[dict], destino, constante: int = 406) -
 
     `constante` es la capacidad de pasajeros POR UNIDAD (406). La última columna
     guarda la capacidad total = constante * unidades (406 simple, 812 doble).
+
+    Formato de celdas:
+      * Columna A (hora): TEXTO con la forma "HH:MM:SS".
+      * Columnas numéricas (vía, tren, capacidad): formato número.
+      * Resto (origen, destino, "servicio"): texto.
     """
     import xlwt
     wb = xlwt.Workbook(encoding="utf-8")
     ws = wb.add_sheet("Hoja1")
-    estilo_hora = xlwt.easyxf(num_format_str="HH:MM:SS")
+    estilo_texto = xlwt.easyxf(num_format_str="@")    # formato texto
+    estilo_numero = xlwt.easyxf(num_format_str="0")   # formato número (entero)
     for i, s in enumerate(salidas):
-        ws.write(i, 0, s["hora"] / 86400.0, estilo_hora)
-        ws.write(i, 1, s["origen"])
-        ws.write(i, 2, s["via"])          # C · vía de salida
-        ws.write(i, 3, s["destino"])
-        ws.write(i, 4, s["via"])          # E · vía de llegada
-        ws.write(i, 5, s["destino"])
-        ws.write(i, 6, "servicio")
-        ws.write(i, 7, s["tren"])
-        ws.write(i, 8, constante * s["unidades"])   # capacidad (406 simple, 812 doble)
+        h = int(s["hora"])
+        hora_txt = f"{h // 3600:02d}:{(h % 3600) // 60:02d}:{h % 60:02d}"
+        ws.write(i, 0, hora_txt, estilo_texto)                       # A · hora (texto HH:MM:SS)
+        ws.write(i, 1, s["origen"])                                  # B · texto
+        ws.write(i, 2, s["via"], estilo_numero)                      # C · vía (número)
+        ws.write(i, 3, s["destino"])                                 # D · texto
+        ws.write(i, 4, s["via"], estilo_numero)                      # E · vía (número)
+        ws.write(i, 5, s["destino"])                                 # F · texto
+        ws.write(i, 6, "servicio")                                   # G · texto
+        ws.write(i, 7, s["tren"], estilo_numero)                     # H · tren (número)
+        ws.write(i, 8, constante * s["unidades"], estilo_numero)     # I · capacidad (número)
     wb.save(destino)
 
 

@@ -478,22 +478,76 @@ def _pm_mapas_por_tren(sh, fila_enc, bloques):
     return via_por_tren, trenes_multiple
 
 
-def leer_planilla_maniobras(origen, hoja: str = "Planilla + Maniobras", via_defecto: int = 1) -> list[dict]:
+def _pm_abrir(origen):
+    """Abre un .xls desde ruta o bytes y devuelve el workbook (xlrd)."""
+    import xlrd
+    if isinstance(origen, (bytes, bytearray)):
+        return xlrd.open_workbook(file_contents=bytes(origen))
+    return xlrd.open_workbook(origen)
+
+
+def _pm_contar_salidas(sh, wb, fila_enc, bloques) -> int:
+    """Cuenta filas que son salidas reales (con N° de viaje y hora)."""
+    n = 0
+    for _code, colmap in bloques:
+        for r in range(fila_enc + 1, sh.nrows):
+            if _pm_entero_pos(_pm_val(sh, r, colmap.get("Viaje"))) and \
+               _pm_hora_seg(sh, wb, r, colmap.get("Partida")) is not None:
+                n += 1
+    return n
+
+
+def _elegir_hoja(wb, hoja_preferida=None) -> str:
+    """Nombre de la hoja con formato Planilla + Maniobras (sin depender del nombre).
+
+    Prioridad: nombre pedido si existe -> hoja con estructura válida y MÁS salidas
+    (desempata el nombre que contenga 'maniobra') -> heurística de nombre -> 1ª hoja.
+    """
+    nombres = wb.sheet_names()
+    if hoja_preferida and hoja_preferida in nombres:
+        return hoja_preferida
+    candidatas = []  # (0 si nombre tiene 'maniobra' si no 1, -salidas, nombre)
+    for n in nombres:
+        sh = wb.sheet_by_name(n)
+        try:
+            fila_enc, bloques = _pm_detectar(sh)
+        except Exception:
+            continue
+        ndep = _pm_contar_salidas(sh, wb, fila_enc, bloques)
+        if ndep > 0:
+            candidatas.append((0 if "maniobra" in n.lower() else 1, -ndep, n))
+    if candidatas:
+        candidatas.sort()
+        return candidatas[0][2]
+    for clave in ("maniobra", "planilla"):
+        for n in nombres:
+            if clave in n.lower():
+                return n
+    return nombres[0]
+
+
+def elegir_hoja_pm(origen, hoja_preferida=None) -> str:
+    """Devuelve el nombre de la hoja Planilla + Maniobras de un archivo (ruta o bytes)."""
+    return _elegir_hoja(_pm_abrir(origen), hoja_preferida)
+
+
+def listar_hojas(origen) -> list[str]:
+    """Lista los nombres de hoja de un archivo .xls (ruta o bytes)."""
+    return _pm_abrir(origen).sheet_names()
+
+
+def leer_planilla_maniobras(origen, hoja=None, via_defecto: int = 1) -> list[dict]:
     """Extrae los servicios de una hoja Planilla + Maniobras. `origen` puede ser ruta o bytes.
+
+    Si `hoja` es None (o no existe en el archivo), la hoja correcta se detecta
+    automáticamente por su estructura, sin importar cómo se llame.
 
     La vía (columnas C/E del simulador) sale de la columna Destino, que es fija
     por tren, y se arrastra a todos sus viajes (incluida la vuelta a Puerto).
     Un tren es doble si aparece 'Múltiple' en alguna de sus filas.
     """
-    import xlrd
-    if isinstance(origen, (bytes, bytearray)):
-        wb = xlrd.open_workbook(file_contents=bytes(origen))
-    else:
-        wb = xlrd.open_workbook(origen)
-    nombres = wb.sheet_names()
-    if hoja not in nombres:
-        hoja = next((n for n in nombres if "maniobra" in n.lower()), nombres[0])
-    sh = wb.sheet_by_name(hoja)
+    wb = _pm_abrir(origen)
+    sh = wb.sheet_by_name(_elegir_hoja(wb, hoja))
     fila_enc, bloques = _pm_detectar(sh)
     via_por_tren, trenes_multiple = _pm_mapas_por_tren(sh, fila_enc, bloques)
 
@@ -548,14 +602,20 @@ def simulador_a_bytes(salidas: list[dict], constante: int = 406) -> bytes:
 
 
 def convertir_a_simulador(entrada_xls: str, salida_xls: str,
-                          hoja: str = "Planilla + Maniobras", constante: int = 406) -> dict:
-    """Pipeline: Planilla + Maniobras (.xls) -> entrada del simulador (.xls)."""
+                          hoja=None, constante: int = 406) -> dict:
+    """Pipeline: Planilla + Maniobras (.xls) -> entrada del simulador (.xls).
+
+    Si `hoja` es None, se detecta automáticamente la hoja con formato
+    Planilla + Maniobras (sin importar su nombre).
+    """
     from collections import Counter
-    salidas = leer_planilla_maniobras(entrada_xls, hoja)
+    hoja_usada = elegir_hoja_pm(entrada_xls, hoja)
+    salidas = leer_planilla_maniobras(entrada_xls, hoja_usada)
     escribir_simulador_xls(salidas, salida_xls, constante)
     return {
         "servicios": len(salidas),
         "por_origen": dict(Counter(s["origen"] for s in salidas)),
+        "hoja": hoja_usada,
         "salida": salida_xls,
     }
 

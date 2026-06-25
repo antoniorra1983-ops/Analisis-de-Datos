@@ -41,6 +41,7 @@ MODO_2 = "Planilla + Maniobras → Simulador  (.xls → .xls)"
 
 st.set_page_config(page_title="Planilla + Maniobras", page_icon="🚆", layout="wide")
 st.title("🚆 Planilla Horaria + Maniobras")
+st.caption("⚙️ Versión NUEVA · descarga con botón · vista previa opcional (marca la casilla)")
 
 
 # --------------------------------------------------------------------------- #

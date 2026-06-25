@@ -18,7 +18,6 @@ Ejecutar en local:
 import datetime as dt
 import io
 
-import base64
 import pandas as pd
 import streamlit as st
 
@@ -47,18 +46,6 @@ st.title("🚆 Planilla Horaria + Maniobras")
 # --------------------------------------------------------------------------- #
 # Utilidades comunes
 # --------------------------------------------------------------------------- #
-def enlace_descarga(data: bytes, filename: str, mime: str, etiqueta: str) -> str:
-    """Enlace de descarga (abre en pestaña nueva). Funciona en Safari de iPhone
-    sin cerrar la sesión, a diferencia del botón nativo."""
-    b64 = base64.b64encode(data).decode()
-    return (
-        f'<a href="data:{mime};base64,{b64}" download="{filename}" target="_blank" '
-        f'rel="noopener" style="display:inline-block;padding:0.55rem 1.3rem;'
-        f'background-color:#1F3864;color:#ffffff;border-radius:0.5rem;'
-        f'text-decoration:none;font-weight:600;font-family:sans-serif;">{etiqueta}</a>'
-    )
-
-
 def hhmmss(seg: int) -> str:
     return f"{seg // 3600:02d}:{(seg % 3600) // 60:02d}:{seg % 60:02d}"
 
@@ -133,9 +120,8 @@ def modo_csv_a_planilla():
                  "Sube la última versión de los archivos `.py` y reinicia la app.")
         return
 
-    st.markdown(enlace_descarga(xlsx_bytes, "Planilla_Maniobras.xlsx", XLSX_MIME,
-                                "⬇️  Descargar Excel (.xlsx)"), unsafe_allow_html=True)
-    st.caption("En iPhone la descarga se abre en una pestaña nueva; desde ahí la guardas. La app no se cierra.")
+    st.download_button("⬇️  Descargar Excel (.xlsx)", data=xlsx_bytes,
+                       file_name="Planilla_Maniobras.xlsx", mime=XLSX_MIME, type="primary")
 
     mc = st.columns(2 + len(cols))
     mc[0].metric("Viajes", resumen["viajes"])
@@ -143,13 +129,12 @@ def modo_csv_a_planilla():
     for i, (c, t) in enumerate(zip(cols, tablas)):
         mc[2 + i].metric(c["nombre"], len(t))
 
-    st.subheader("Vista previa")
-    st.caption("EV = entrada a vía · RET = retorno · SV = sale de vía. El Excel incluye el color de EV/SV.")
-    pestanas = st.tabs([f"{c['nombre']} ({len(t)})" for c, t in zip(cols, tablas)])
-    for tab, c, t in zip(pestanas, cols, tablas):
-        with tab:
-            st.dataframe(_filas_a_df(t, round_minutes), hide_index=True,
-                         use_container_width=True, height=460)
+    if st.checkbox("Ver vista previa de la planilla"):
+        st.caption("EV = entrada a vía · RET = retorno · SV = sale de vía. Mostrando hasta 60 filas por terminal.")
+        pestanas = st.tabs([f"{c['nombre']} ({len(t)})" for c, t in zip(cols, tablas)])
+        for tab, c, t in zip(pestanas, cols, tablas):
+            with tab:
+                st.table(_filas_a_df(t, round_minutes).head(60))
 
 
 # --------------------------------------------------------------------------- #
@@ -215,9 +200,8 @@ def modo_planilla_a_simulador():
                    "Prueba a elegir otra hoja en el desplegable.")
         return
 
-    st.markdown(enlace_descarga(xls_bytes, "Entrada_Simulador.xls", XLS_MIME,
-                                "⬇️  Descargar entrada del simulador (.xls)"), unsafe_allow_html=True)
-    st.caption("En iPhone la descarga se abre en una pestaña nueva; desde ahí la guardas. La app no se cierra.")
+    st.download_button("⬇️  Descargar entrada del simulador (.xls)", data=xls_bytes,
+                       file_name="Entrada_Simulador.xls", mime=XLS_MIME, type="primary")
 
     from collections import Counter
     por_origen = Counter(s["origen"] for s in salidas)
@@ -226,15 +210,15 @@ def modo_planilla_a_simulador():
     for i, (org, n) in enumerate(sorted(por_origen.items())):
         mc[1 + i].metric(f"Salen de {org}", n)
 
-    st.subheader("Vista previa")
-    df = pd.DataFrame([{
-        "Hora": hhmmss(s["hora"]), "Origen": s["origen"], "Vía": s["via"],
-        "Destino": s["destino"], "Tren": s["tren"],
-        "Cap.": int(constante) * s["unidades"],
-    } for s in salidas])
-    st.dataframe(df, hide_index=True, use_container_width=True, height=460)
-    st.caption("El .xls descargado tiene el formato completo de 9 columnas (estilo Planillaprueba2): "
-               "la vía va en las columnas C y E, y la capacidad (406 simple · 812 doble) en la última.")
+    if st.checkbox("Ver vista previa de los servicios"):
+        df = pd.DataFrame([{
+            "Hora": hhmmss(s["hora"]), "Origen": s["origen"], "Vía": s["via"],
+            "Destino": s["destino"], "Tren": s["tren"],
+            "Cap.": int(constante) * s["unidades"],
+        } for s in salidas])
+        st.table(df.head(60))
+        st.caption("Primeras 60 filas; el .xls trae todas. La vía va en las columnas C y E; "
+                   "la capacidad (406 simple · 812 doble) en la última.")
 
 
 # --------------------------------------------------------------------------- #

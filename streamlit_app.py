@@ -65,7 +65,7 @@ def hhmmss(seg: int) -> str:
 # --------------------------------------------------------------------------- #
 # MODO 1 · Simulador → Planilla + Maniobras
 # --------------------------------------------------------------------------- #
-@st.cache_data(show_spinner="Procesando…")
+@st.cache_data(show_spinner="Procesando…", max_entries=3, ttl=3600)
 def _procesar_csv(raw, nombre, sep, cod_puerto, cod_limache, nombre_puerto,
                   nombre_limache, multiple_threshold, round_minutes, maniobras,
                   train_prefix, titulo):
@@ -154,13 +154,13 @@ def modo_csv_a_planilla():
 # --------------------------------------------------------------------------- #
 # MODO 2 · Planilla + Maniobras → entrada del simulador
 # --------------------------------------------------------------------------- #
-@st.cache_data(show_spinner="Convirtiendo…")
+@st.cache_data(show_spinner="Convirtiendo…", max_entries=3, ttl=3600)
 def _procesar_pm(raw, hoja, constante):
     salidas = leer_planilla_maniobras(raw, hoja)
     return salidas, simulador_a_bytes(salidas, constante)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=5, ttl=3600)
 def _hojas_archivo(raw):
     """Lista las hojas del archivo y cuál es la Planilla + Maniobras detectada."""
     return listar_hojas(raw), elegir_hoja_pm(raw)
@@ -254,3 +254,8 @@ if modo == MODO_1:
     modo_csv_a_planilla()
 else:
     modo_planilla_a_simulador()
+
+with st.sidebar:
+    st.divider()
+    st.caption("¿Página en blanco? Primero **recarga** (desliza hacia abajo en el móvil) o "
+               "abre el enlace de nuevo. Reinicia (*Manage app → Reboot*) solo si la recarga no la trae de vuelta.")

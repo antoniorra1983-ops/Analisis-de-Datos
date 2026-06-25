@@ -15,7 +15,6 @@ Ejecutar en local:
     streamlit run streamlit_app.py
 """
 
-import base64
 import datetime as dt
 import io
 
@@ -47,17 +46,6 @@ st.title("🚆 Planilla Horaria + Maniobras")
 # --------------------------------------------------------------------------- #
 # Utilidades comunes
 # --------------------------------------------------------------------------- #
-def enlace_descarga(data: bytes, filename: str, mime: str, etiqueta: str) -> str:
-    """Enlace de descarga que abre en pestaña nueva (no corta la sesión en Safari iPhone)."""
-    b64 = base64.b64encode(data).decode()
-    return (
-        f'<a href="data:{mime};base64,{b64}" download="{filename}" target="_blank" '
-        f'rel="noopener" style="display:inline-block;padding:0.55rem 1.3rem;'
-        f'background-color:#1F3864;color:#ffffff;border-radius:0.5rem;'
-        f'text-decoration:none;font-weight:600;font-family:sans-serif;">{etiqueta}</a>'
-    )
-
-
 def hhmmss(seg: int) -> str:
     return f"{seg // 3600:02d}:{(seg % 3600) // 60:02d}:{seg % 60:02d}"
 
@@ -115,7 +103,7 @@ def modo_csv_a_planilla():
     archivo = st.file_uploader("Sube el CSV del simulador", type=["csv"], key="csv")
     if archivo is None:
         st.info("Sube el CSV del simulador (`Planilla_Simulador.csv`) para generar la planilla.")
-        st.stop()
+        return
 
     try:
         cols, tablas, xlsx_bytes, resumen = _procesar_csv(
@@ -125,16 +113,15 @@ def modo_csv_a_planilla():
         )
     except Exception as exc:  # noqa: BLE001
         st.error(f"No se pudo procesar el archivo: {exc}")
-        st.stop()
+        return
 
     if not cols or not isinstance(cols[0], dict):
         st.error("`planilla_maniobras.py` está desactualizado en el repositorio. "
                  "Sube la última versión de los archivos `.py` y reinicia la app.")
-        st.stop()
+        return
 
-    st.markdown(enlace_descarga(xlsx_bytes, "Planilla_Maniobras.xlsx", XLSX_MIME,
-                                "⬇️  Descargar Excel (.xlsx)"), unsafe_allow_html=True)
-    st.caption("En iPhone se abre en pestaña nueva y queda en Archivos → Descargas; la app no se cierra.")
+    st.download_button("⬇️  Descargar Excel (.xlsx)", data=xlsx_bytes,
+                       file_name="Planilla_Maniobras.xlsx", mime=XLSX_MIME, type="primary")
 
     mc = st.columns(2 + len(cols))
     mc[0].metric("Viajes", resumen["viajes"])
@@ -175,7 +162,7 @@ def modo_planilla_a_simulador():
     if archivo is None:
         st.info("Sube el `.xls` de la Planilla + Maniobras (laboral o sábado) para generar la "
                 "entrada del simulador en formato plano (.xls).")
-        st.stop()
+        return
 
     raw = archivo.getvalue()
 
@@ -185,10 +172,10 @@ def modo_planilla_a_simulador():
     except ModuleNotFoundError as exc:
         st.error(f"Falta una librería en el servidor: **{exc.name}**. Tu `requirements.txt` debe "
                  "incluir `xlrd` y `xlwt`. Súbelo a GitHub y reinicia la app (*Manage app → Reboot*).")
-        st.stop()
+        return
     except Exception as exc:  # noqa: BLE001
         st.error(f"No se pudo abrir el archivo: {exc}")
-        st.stop()
+        return
 
     if len(hojas) > 1:
         idx = hojas.index(detectada) if detectada in hojas else 0
@@ -202,24 +189,20 @@ def modo_planilla_a_simulador():
     try:
         salidas, xls_bytes = _procesar_pm(raw, hoja, int(constante))
     except ModuleNotFoundError as exc:
-        st.error(
-            f"Falta una librería en el servidor: **{exc.name}**. Tu "
-            "`requirements.txt` debe incluir `xlrd` y `xlwt`. Súbelo a GitHub y "
-            "reinicia la app (*Manage app → Reboot*) para que se instalen."
-        )
-        st.stop()
+        st.error(f"Falta una librería en el servidor: **{exc.name}**. Tu `requirements.txt` debe "
+                 "incluir `xlrd` y `xlwt`. Súbelo a GitHub y reinicia la app (*Manage app → Reboot*).")
+        return
     except Exception as exc:  # noqa: BLE001
         st.error(f"No se pudo leer la planilla: {exc}")
-        st.stop()
+        return
 
     if not salidas:
         st.warning(f"La hoja **{hoja}** no tiene servicios con N° de viaje y hora. "
                    "Prueba a elegir otra hoja en el desplegable.")
-        st.stop()
+        return
 
-    st.markdown(enlace_descarga(xls_bytes, "Entrada_Simulador.xls", XLS_MIME,
-                                "⬇️  Descargar entrada del simulador (.xls)"), unsafe_allow_html=True)
-    st.caption("En iPhone se abre en pestaña nueva y queda en Archivos → Descargas; la app no se cierra.")
+    st.download_button("⬇️  Descargar entrada del simulador (.xls)", data=xls_bytes,
+                       file_name="Entrada_Simulador.xls", mime=XLS_MIME, type="primary")
 
     from collections import Counter
     por_origen = Counter(s["origen"] for s in salidas)
@@ -254,8 +237,3 @@ if modo == MODO_1:
     modo_csv_a_planilla()
 else:
     modo_planilla_a_simulador()
-
-with st.sidebar:
-    st.divider()
-    st.caption("¿Página en blanco? Primero **recarga** (desliza hacia abajo en el móvil) o "
-               "abre el enlace de nuevo. Reinicia (*Manage app → Reboot*) solo si la recarga no la trae de vuelta.")

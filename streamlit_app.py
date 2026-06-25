@@ -28,7 +28,9 @@ from planilla_maniobras import (
     cargar_viajes,
     construir_tablas,
     construir_workbook,
+    elegir_hoja_pm,
     leer_planilla_maniobras,
+    listar_hojas,
     simulador_a_bytes,
 )
 
@@ -158,9 +160,14 @@ def _procesar_pm(raw, hoja, constante):
     return salidas, simulador_a_bytes(salidas, constante)
 
 
+@st.cache_data(show_spinner=False)
+def _hojas_archivo(raw):
+    """Lista las hojas del archivo y cuál es la Planilla + Maniobras detectada."""
+    return listar_hojas(raw), elegir_hoja_pm(raw)
+
+
 def modo_planilla_a_simulador():
     with st.sidebar:
-        hoja = st.text_input("Nombre de la hoja a leer", value="Planilla + Maniobras")
         constante = st.number_input("Capacidad por unidad (simple)", min_value=0, value=406, step=1,
                                     help="406 por unidad: 406 si es simple, 812 si es doble.")
 
@@ -170,8 +177,30 @@ def modo_planilla_a_simulador():
                 "entrada del simulador en formato plano (.xls).")
         st.stop()
 
+    raw = archivo.getvalue()
+
+    # Detectar la hoja correcta (por estructura, sin importar el nombre) y dejar elegir
     try:
-        salidas, xls_bytes = _procesar_pm(archivo.getvalue(), hoja, int(constante))
+        hojas, detectada = _hojas_archivo(raw)
+    except ModuleNotFoundError as exc:
+        st.error(f"Falta una librería en el servidor: **{exc.name}**. Tu `requirements.txt` debe "
+                 "incluir `xlrd` y `xlwt`. Súbelo a GitHub y reinicia la app (*Manage app → Reboot*).")
+        st.stop()
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"No se pudo abrir el archivo: {exc}")
+        st.stop()
+
+    if len(hojas) > 1:
+        idx = hojas.index(detectada) if detectada in hojas else 0
+        hoja = st.selectbox("Hoja a convertir", hojas, index=idx,
+                            help="Se detecta automáticamente la hoja con formato Planilla + "
+                                 "Maniobras; si no es la correcta, elígela aquí.")
+    else:
+        hoja = hojas[0]
+        st.caption(f"Hoja: **{hoja}**")
+
+    try:
+        salidas, xls_bytes = _procesar_pm(raw, hoja, int(constante))
     except ModuleNotFoundError as exc:
         st.error(
             f"Falta una librería en el servidor: **{exc.name}**. Tu "
@@ -184,7 +213,8 @@ def modo_planilla_a_simulador():
         st.stop()
 
     if not salidas:
-        st.warning("No se encontraron servicios. ¿La hoja se llama distinto? Ajusta el nombre en la barra lateral.")
+        st.warning(f"La hoja **{hoja}** no tiene servicios con N° de viaje y hora. "
+                   "Prueba a elegir otra hoja en el desplegable.")
         st.stop()
 
     st.markdown(enlace_descarga(xls_bytes, "Entrada_Simulador.xls", XLS_MIME,

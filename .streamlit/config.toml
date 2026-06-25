@@ -1,0 +1,8 @@
+[server]
+# Desactiva la compresión del websocket. Algunas redes/proxies manejan mal los
+# mensajes comprimidos y eso deja la página en blanco al interactuar (subir un
+# archivo, cambiar de modo, etc.). Con esto el refresco automático funciona.
+enableWebsocketCompression = false
+
+[browser]
+gatherUsageStats = false

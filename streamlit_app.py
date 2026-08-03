@@ -24,6 +24,7 @@ import streamlit as st
 from planilla_maniobras import (
     COLUMNAS,
     Config,
+    cargar_paradas,
     cargar_viajes,
     construir_tablas,
     construir_workbook,
@@ -66,9 +67,13 @@ def _procesar_csv(raw, nombre, sep, cod_puerto, cod_limache, nombre_puerto,
     )
     viajes = cargar_viajes(io.BytesIO(raw), cfg)
     cols, tablas = construir_tablas(viajes, cfg)
-    wb = construir_workbook(cols, tablas, cfg, viajes["dep"].iloc[0], nombre)
+    paradas = cargar_paradas(io.BytesIO(raw), cfg)
+    wb = construir_workbook(cols, tablas, cfg, viajes["dep"].iloc[0], nombre, paradas)
     buf = io.BytesIO(); wb.save(buf)
-    return cols, tablas, buf.getvalue(), dict(viajes=len(viajes), trenes=int(viajes["train"].nunique()))
+    resumen = dict(viajes=len(viajes), trenes=int(viajes["train"].nunique()),
+                   via1=sum(1 for v in paradas if v["track"] == 0),
+                   via2=sum(1 for v in paradas if v["track"] == 1))
+    return cols, tablas, buf.getvalue(), resumen
 
 
 def _fmt_time(v, redondear):

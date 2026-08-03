@@ -36,7 +36,7 @@ from __future__ import annotations
 import argparse
 import os
 from dataclasses import dataclass, field
-from datetime import time
+from datetime import datetime, time
 
 import pandas as pd
 from openpyxl import Workbook
@@ -84,6 +84,16 @@ class Config:
     col_arrive: str = "arriveTime"
     col_leave: str = "leaveTime"
 
+    # Columnas de pasajeros (para las hojas de Carga de Pasajeros V1/V2).
+    # Si no están en el CSV, esas hojas simplemente no se generan.
+    col_arrive_pax: str = "arrivePassengers"
+    col_arrive_est_pax: str = "arriveStationPassengers"
+    col_leave_pax: str = "leavePassengers"
+    col_leave_est_pax: str = "leaveStationPassengers"
+
+    linea_carga: str = "Línea: Valparaíso-Limache"
+    contrato_carga: str = "Todos los Contratos"
+
 
 # Encabezados de cada terminal, en orden (9 columnas; la capacidad se refleja
 # en la columna "M" como "Múltiple").
@@ -126,6 +136,12 @@ def seconds_to_time(total: float, round_minutes: bool = False) -> time:
         total = (total + 30) // 60 * 60
     h, m, s = total // 3600, (total % 3600) // 60, total % 60
     return time(h % 24, m, 0 if round_minutes else s)
+
+
+def _hhmmss(total: float) -> str:
+    """Hora como texto 'HH:MM:SS' a partir de segundos."""
+    t = int(round(total))
+    return f"{t // 3600:02d}:{(t % 3600) // 60:02d}:{t % 60:02d}"
 
 
 # --------------------------------------------------------------------------- #
@@ -270,19 +286,27 @@ def cargar_paradas(csv_path, cfg: Config) -> list[dict]:
         raise ValueError(f"El CSV no tiene las columnas esperadas: {faltan}")
 
     viajes = []
+    tiene_pax = all(c in df.columns for c in
+                    (cfg.col_arrive_pax, cfg.col_arrive_est_pax,
+                     cfg.col_leave_pax, cfg.col_leave_est_pax))
     for trip_id, g in df.groupby(cfg.col_trip, sort=True):
         g = g.reset_index(drop=True)
-        paradas = [
-            {"est": str(r[cfg.col_station]).strip(),
-             "lleg": hms_to_seconds(r[cfg.col_arrive]),
-             "sal": hms_to_seconds(r[cfg.col_leave])}
-            for _, r in g.iterrows()
-        ]
+        paradas = []
+        for _, r in g.iterrows():
+            p = {"est": str(r[cfg.col_station]).strip(),
+                 "lleg": hms_to_seconds(r[cfg.col_arrive]),
+                 "sal": hms_to_seconds(r[cfg.col_leave])}
+            if tiene_pax:
+                # carga = pasajeros a bordo al salir; suben = los que abordan aquí
+                p["carga"] = int(r[cfg.col_leave_pax])
+                p["suben"] = int(r[cfg.col_arrive_est_pax]) - int(r[cfg.col_leave_est_pax])
+            paradas.append(p)
         viajes.append({
             "trip": int(trip_id),
             "train": int(g.iloc[0][cfg.col_train]),
             "cap": int(g.iloc[0][cfg.col_cap]),
             "track": int(g.iloc[0][cfg.col_track]),
+            "pax": tiene_pax,
             "paradas": paradas,
         })
     return viajes
@@ -396,6 +420,110 @@ def agregar_hojas_thdr(wb: Workbook, paradas_viajes: list[dict], cfg: Config) ->
     return creadas
 
 
+# --------------------------------------------------------------------------- #
+# Hojas V1 / V2 — Carga de Pasajeros (formato EXPORT Carga Pasajeros)
+# --------------------------------------------------------------------------- #
+CARGA_CAMPOS = ["N° THDR", "N° Viaje", "Tren", "Fecha", "Hora Origen", "Hora Fin",
+                "Motriz 1", "Motriz 2"]
+CARGA_FINALES = ["Total a Bordo", "Carga Máxima", "Estación Máxima"]
+CARGA_TITULO = "CARGA DE PASAJEROS POR SERVICIO para Filial EFE-VALPO"
+CARGA_FILA_ENC = 10     # fila de encabezados
+CARGA_FILA_DATOS = 11   # primera fila de datos
+
+
+def agregar_hojas_carga(wb: Workbook, paradas_viajes: list[dict], cfg: Config) -> list[str]:
+    """Añade las hojas V1 y V2 con la carga de pasajeros por servicio.
+
+    Replica el formato de los archivos *EXPORT Carga Pasajeros*: una fila por
+    viaje, con los pasajeros a bordo al salir de cada estación, más el total
+    transportado, la carga máxima y en qué estación se alcanza.
+    """
+    if not any(v.get("pax") for v in paradas_viajes):
+        return []                      # el CSV no trae columnas de pasajeros
+
+    NAVY = "1F3864"
+    thin = Side(style="thin", color="B0B0B0")
+    borde = Border(left=thin, right=thin, top=thin, bottom=thin)
+    f_cell = Font(name=cfg.fuente, size=9)
+    f_hdr = Font(name=cfg.fuente, bold=True, color="FFFFFF", size=9)
+    f_bold = Font(name=cfg.fuente, bold=True, size=9)
+    center = Alignment(horizontal="center", vertical="center")
+    wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    creado_el = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+    creadas = []
+    for via, track in ((1, 0), (2, 1)):
+        orden = _orden_estaciones(paradas_viajes, track)
+        if not orden:
+            continue
+        ws = wb.create_sheet(f"V{via}")
+
+        # Cabecera del reporte
+        ws.cell(1, 1, CARGA_TITULO).font = Font(name=cfg.fuente, bold=True, size=11, color=NAVY)
+        meta = [(3, "Fecha creación archivo ", creado_el),
+                (4, "Desde:", cfg.fecha_thdr), (5, "Hasta:", cfg.fecha_thdr),
+                (6, "Línea:", cfg.linea_carga), (7, "Vía:", f"Vía {via}"),
+                (8, "Contrato:", cfg.contrato_carga)]
+        for fila, etq, val in meta:
+            ws.cell(fila, 1, etq).font = f_bold
+            ws.cell(fila, 2, val).font = f_cell
+
+        # Encabezados: campos + estaciones (códigos) + totales
+        encabezados = CARGA_CAMPOS + orden + CARGA_FINALES
+        for j, h in enumerate(encabezados):
+            c = ws.cell(CARGA_FILA_ENC, 1 + j, h)
+            c.font, c.alignment, c.border = f_hdr, wrap, borde
+            c.fill = PatternFill("solid", fgColor=NAVY)
+
+        col_de_est = {est: len(CARGA_CAMPOS) + 1 + i for i, est in enumerate(orden)}
+        col_total = len(CARGA_CAMPOS) + len(orden) + 1
+
+        viajes_via = sorted((v for v in paradas_viajes if v["track"] == track),
+                            key=lambda v: v["paradas"][0]["sal"])
+        for i, v in enumerate(viajes_via):
+            r = CARGA_FILA_DATOS + i
+            primera, ultima = v["paradas"][0], v["paradas"][-1]
+            ws.cell(r, 1, v["trip"])                                  # N° THDR
+            ws.cell(r, 2, "")                                         # N° Viaje (no viene en el CSV)
+            ws.cell(r, 3, v["train"])
+            ws.cell(r, 4, cfg.fecha_thdr)
+            ws.cell(r, 5, _hhmmss(primera["sal"]))                    # Hora Origen (texto)
+            ws.cell(r, 6, _hhmmss(ultima["lleg"]))                    # Hora Fin (texto)
+            ws.cell(r, 7, "")                                         # Motriz 1
+            ws.cell(r, 8, "")                                         # Motriz 2
+
+            cargas = {}
+            for p in v["paradas"]:
+                col = col_de_est.get(p["est"])
+                if col is not None:
+                    ws.cell(r, col, p.get("carga", 0))
+                    cargas[p["est"]] = p.get("carga", 0)
+            maxima = max(cargas.values()) if cargas else 0
+            ws.cell(r, col_total, sum(p.get("suben", 0) for p in v["paradas"]))
+            ws.cell(r, col_total + 1, maxima)
+            ws.cell(r, col_total + 2,
+                    " - ".join(e for e in orden if cargas.get(e) == maxima) if maxima else "")
+
+            for j in range(1, col_total + 3):
+                cc = ws.cell(r, j)
+                cc.font, cc.border = f_cell, borde
+                cc.alignment = center if j != col_total + 2 else Alignment(
+                    horizontal="left", vertical="center")
+
+        # Anchos y vista
+        for j, w in enumerate([9, 10, 7, 11, 11, 10, 9, 9]):
+            ws.column_dimensions[get_column_letter(1 + j)].width = w
+        for est in orden:
+            ws.column_dimensions[get_column_letter(col_de_est[est])].width = 6
+        ws.column_dimensions[get_column_letter(col_total)].width = 12
+        ws.column_dimensions[get_column_letter(col_total + 1)].width = 12
+        ws.column_dimensions[get_column_letter(col_total + 2)].width = 24
+        ws.freeze_panes = ws.cell(CARGA_FILA_DATOS, 4)
+        ws.sheet_view.showGridLines = False
+        creadas.append(ws.title)
+    return creadas
+
+
 def construir_workbook(cols: list[dict], tablas: list[list[list]],
                        cfg: Config, hora_inicio: str, origen_archivo: str,
                        paradas_viajes: list[dict] | None = None) -> Workbook:
@@ -490,9 +618,10 @@ def construir_workbook(cols: list[dict], tablas: list[list[list]],
     ws.freeze_panes = "A7"
     ws.sheet_view.showGridLines = False
 
-    # Hojas THDR (una por vía), si se entregó el detalle de paradas
+    # Hojas THDR (una por vía) y hojas V1/V2 de carga de pasajeros
     if paradas_viajes:
         agregar_hojas_thdr(wb, paradas_viajes, cfg)
+        agregar_hojas_carga(wb, paradas_viajes, cfg)
     return wb
 
 

@@ -73,6 +73,7 @@ class Config:
     train_prefix: str = ""              # prefijo para renumerar trenes
     titulo: str = "Planilla Horaria + Maniobras — Simulador"
     fuente: str = "Arial"
+    fecha_thdr: str = ""                # etiqueta de fecha en las hojas THDR (ej. "010526")
 
     # Nombres de columnas esperados en el CSV
     col_trip: str = "tripID"
@@ -88,6 +89,27 @@ class Config:
 # en la columna "M" como "Múltiple").
 COLUMNAS = ["Viaje", "Tren", "Partida", "N°", "Inter.",
             "Man.", "Destino", "M", "Obs."]
+
+
+# --------------------------------------------------------------------------- #
+# Hojas THDR (una por vía) — formato de los archivos THDR_viaN
+# --------------------------------------------------------------------------- #
+# Código de estación del CSV -> nombre completo usado en el THDR.
+NOMBRES_ESTACIONES = {
+    "PUE": "Puerto", "BEL": "Bellavista", "FRA": "Francia", "BAR": "Baron",
+    "POR": "Portales", "REC": "Recreo", "MIR": "Miramar", "VIN": "Vina del mar",
+    "HOS": "Hospital", "CHO": "Chorrillos", "SLT": "El Salto", "VAL": "Valencia",
+    "QUI": "Quilpue", "SOL": "El Sol", "BTO": "El Belloto", "AME": "Americas",
+    "CON": "La Concepcion", "VAM": "Villa Alemana", "SGA": "Sargento Aldea",
+    "PEN": "Penablanca", "LIM": "Limache",
+}
+
+# Campos de cabecera del THDR (columnas A..I).
+THDR_CAMPOS = ["Viaje", "Tren", "Hora Salida Programada", "Motriz 1", "Motriz 2",
+               "Unidad", "Maquinista", "Controlador", "Observación"]
+
+THDR_COL_INICIO = 12   # primera columna de estaciones (A..I + 2 de separación)
+THDR_FILA_DATOS = 6    # primera fila de datos
 
 
 # --------------------------------------------------------------------------- #
@@ -234,9 +256,154 @@ def construir_tablas(viajes: pd.DataFrame, cfg: Config) -> tuple[list[dict], lis
 # --------------------------------------------------------------------------- #
 # 4) Escribir el Excel con formato
 # --------------------------------------------------------------------------- #
+def cargar_paradas(csv_path, cfg: Config) -> list[dict]:
+    """Lee el CSV y devuelve, por viaje, el detalle de cada parada.
+
+    Cada elemento: {trip, train, cap, track, paradas: [{est, lleg, sal}, ...]}
+    Es el detalle que necesitan las hojas THDR (llegada/salida por estación).
+    """
+    df = pd.read_csv(csv_path, sep=cfg.sep)
+    faltan = [c for c in (cfg.col_trip, cfg.col_train, cfg.col_cap, cfg.col_track,
+                          cfg.col_station, cfg.col_arrive, cfg.col_leave)
+              if c not in df.columns]
+    if faltan:
+        raise ValueError(f"El CSV no tiene las columnas esperadas: {faltan}")
+
+    viajes = []
+    for trip_id, g in df.groupby(cfg.col_trip, sort=True):
+        g = g.reset_index(drop=True)
+        paradas = [
+            {"est": str(r[cfg.col_station]).strip(),
+             "lleg": hms_to_seconds(r[cfg.col_arrive]),
+             "sal": hms_to_seconds(r[cfg.col_leave])}
+            for _, r in g.iterrows()
+        ]
+        viajes.append({
+            "trip": int(trip_id),
+            "train": int(g.iloc[0][cfg.col_train]),
+            "cap": int(g.iloc[0][cfg.col_cap]),
+            "track": int(g.iloc[0][cfg.col_track]),
+            "paradas": paradas,
+        })
+    return viajes
+
+
+def _orden_estaciones(paradas_viajes: list[dict], track: int) -> list[str]:
+    """Orden de estaciones de una vía: el recorrido más largo de esa vía."""
+    recorridos = [[p["est"] for p in v["paradas"]]
+                  for v in paradas_viajes if v["track"] == track]
+    if not recorridos:
+        return []
+    base = max(recorridos, key=len)
+    # Completar con estaciones que aparezcan en otros recorridos de la misma vía
+    for rec in recorridos:
+        for i, est in enumerate(rec):
+            if est not in base:
+                anterior = rec[i - 1] if i else None
+                pos = base.index(anterior) + 1 if anterior in base else len(base)
+                base.insert(pos, est)
+    return base
+
+
+def agregar_hojas_thdr(wb: Workbook, paradas_viajes: list[dict], cfg: Config) -> list[str]:
+    """Añade al libro una hoja THDR por vía (llegada/salida por estación).
+
+    Vía 1 = trenes que van de Puerto a Limache (track 0);
+    Vía 2 = sentido contrario (track 1).
+    """
+    NAVY = "1F3864"
+    thin = Side(style="thin", color="B0B0B0")
+    borde = Border(left=thin, right=thin, top=thin, bottom=thin)
+    f_cell = Font(name=cfg.fuente, size=9)
+    f_hdr = Font(name=cfg.fuente, bold=True, color="FFFFFF", size=9)
+    f_est = Font(name=cfg.fuente, bold=True, size=10, color=NAVY)
+    center = Alignment(horizontal="center", vertical="center")
+    wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    fmt_time = "h:mm" if cfg.round_minutes else "h:mm:ss"
+
+    creadas = []
+    for via, track in ((1, 0), (2, 1)):
+        orden = _orden_estaciones(paradas_viajes, track)
+        if not orden:
+            continue
+        ws = wb.create_sheet(f"THDR Vía {via}")
+
+        # Fila 1: fecha (si se indicó) y nombres de estación
+        if cfg.fecha_thdr:
+            c = ws.cell(1, 1, cfg.fecha_thdr)
+            c.font = Font(name=cfg.fuente, bold=True, size=10)
+        col_de_est = {}
+        for i, est in enumerate(orden):
+            base = THDR_COL_INICIO + i * 2
+            col_de_est[est] = base
+            c = ws.cell(1, base, NOMBRES_ESTACIONES.get(est, est))
+            c.font, c.alignment = f_est, center
+
+        # Fila 2: encabezados
+        for j, campo in enumerate(THDR_CAMPOS):
+            c = ws.cell(2, 1 + j, campo)
+            c.font, c.alignment, c.border = f_hdr, wrap, borde
+            c.fill = PatternFill("solid", fgColor=NAVY)
+        ultimo = orden[-1]
+        for est in orden:
+            base = col_de_est[est]
+            etiquetas = ["Hora Llegada"] if est == ultimo else ["Hora Llegada", "Hora Salida"]
+            for k, etq in enumerate(etiquetas):
+                c = ws.cell(2, base + k, etq)
+                c.font, c.alignment, c.border = f_hdr, wrap, borde
+                c.fill = PatternFill("solid", fgColor=NAVY)
+
+        # Datos (ordenados por hora de salida del origen)
+        viajes_via = sorted((v for v in paradas_viajes if v["track"] == track),
+                            key=lambda v: v["paradas"][0]["sal"])
+        for i, v in enumerate(viajes_via):
+            r = THDR_FILA_DATOS + i
+            ws.cell(r, 1, v["trip"]).alignment = center
+            ws.cell(r, 2, v["train"]).alignment = center
+            prog = ws.cell(r, 3, seconds_to_time(v["paradas"][0]["sal"], True))
+            prog.number_format, prog.alignment = "h:mm", center
+            if v["cap"] >= cfg.multiple_threshold:
+                ws.cell(r, 6, "M").alignment = center     # Unidad: M = múltiple
+            for j in range(1, len(THDR_CAMPOS) + 1):
+                cc = ws.cell(r, j)
+                cc.font, cc.border = f_cell, borde
+
+            primera, ultima_p = v["paradas"][0], v["paradas"][-1]
+            for p in v["paradas"]:
+                base = col_de_est.get(p["est"])
+                if base is None:
+                    continue
+                # El origen no tiene llegada; el destino final no tiene salida.
+                if p is not primera:
+                    c = ws.cell(r, base, seconds_to_time(p["lleg"], cfg.round_minutes))
+                    c.number_format, c.alignment, c.font, c.border = fmt_time, center, f_cell, borde
+                if p is not ultima_p and p["est"] != ultimo:
+                    c = ws.cell(r, base + 1, seconds_to_time(p["sal"], cfg.round_minutes))
+                    c.number_format, c.alignment, c.font, c.border = fmt_time, center, f_cell, borde
+
+        # Anchos y vista
+        for j, w in enumerate([6, 6, 11, 8, 8, 7, 26, 14, 14]):
+            ws.column_dimensions[get_column_letter(1 + j)].width = w
+        ws.column_dimensions[get_column_letter(10)].width = 2
+        ws.column_dimensions[get_column_letter(11)].width = 2
+        for est in orden:
+            base = col_de_est[est]
+            for k in range(2 if est != ultimo else 1):
+                ws.column_dimensions[get_column_letter(base + k)].width = 10
+        ws.freeze_panes = ws.cell(THDR_FILA_DATOS, 3)
+        ws.sheet_view.showGridLines = False
+        creadas.append(ws.title)
+    return creadas
+
+
 def construir_workbook(cols: list[dict], tablas: list[list[list]],
-                       cfg: Config, hora_inicio: str, origen_archivo: str) -> Workbook:
-    """Arma el libro Excel (en memoria) con N terminales lado a lado."""
+                       cfg: Config, hora_inicio: str, origen_archivo: str,
+                       paradas_viajes: list[dict] | None = None) -> Workbook:
+    """Arma el libro Excel (en memoria) con N terminales lado a lado.
+
+    Si se pasa `paradas_viajes` (de `cargar_paradas`), añade además una hoja
+    THDR por vía, quedando 3 hojas en total.
+    """
     NAVY, GRIS, VERDE = "1F3864", "F2F2F2", "E2EFDA"
     NCOL = len(COLUMNAS)            # 9 columnas por bloque
     PASO = NCOL + 1                 # + 1 columna separadora
@@ -322,12 +489,17 @@ def construir_workbook(cols: list[dict], tablas: list[list[list]],
             ws.column_dimensions[get_column_letter(base + NCOL)].width = 2  # separador
     ws.freeze_panes = "A7"
     ws.sheet_view.showGridLines = False
+
+    # Hojas THDR (una por vía), si se entregó el detalle de paradas
+    if paradas_viajes:
+        agregar_hojas_thdr(wb, paradas_viajes, cfg)
     return wb
 
 
 def escribir_excel(cols, tablas, out_path: str, cfg: Config,
-                   hora_inicio: str, origen_archivo: str) -> None:
-    wb = construir_workbook(cols, tablas, cfg, hora_inicio, origen_archivo)
+                   hora_inicio: str, origen_archivo: str,
+                   paradas_viajes: list[dict] | None = None) -> None:
+    wb = construir_workbook(cols, tablas, cfg, hora_inicio, origen_archivo, paradas_viajes)
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     wb.save(out_path)
 
@@ -340,12 +512,16 @@ def convertir(csv_path: str, out_path: str, cfg: Config) -> dict:
     viajes = cargar_viajes(csv_path, cfg)
     cols, tablas = construir_tablas(viajes, cfg)
     hora_inicio = viajes["dep"].iloc[0]
-    escribir_excel(cols, tablas, out_path, cfg, hora_inicio, os.path.basename(csv_path))
+    paradas_viajes = cargar_paradas(csv_path, cfg)
+    escribir_excel(cols, tablas, out_path, cfg, hora_inicio,
+                   os.path.basename(csv_path), paradas_viajes)
 
     return {
         "viajes_total": len(viajes),
         "trenes": int(viajes["train"].nunique()),
         "terminales": {c["nombre"]: len(t) for c, t in zip(cols, tablas)},
+        "thdr": {f"Vía {v}": sum(1 for x in paradas_viajes if x["track"] == t)
+                 for v, t in ((1, 0), (2, 1))},
         "salida": out_path,
     }
 

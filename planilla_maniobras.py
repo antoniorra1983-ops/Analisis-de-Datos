@@ -875,12 +875,14 @@ def _pm_a_entero(v):
 
 
 def _pm_mapas_por_tren(sh, fila_enc, bloques):
-    """Recorre toda la hoja y arma dos mapas por tren:
+    """Recorre toda la hoja y arma tres mapas por tren:
        - zona_por_tren: valor (fijo por tren) de la columna Destino -> zona de
          destino (6 = Limache, 4 = Sargento Aldea). NO es la vía.
+       - cap_por_tren: valor de la columna Capacidad, si el archivo la trae.
        - trenes_multiple: trenes con 'Múltiple' en CUALQUIER columna de alguna de sus
          filas (en estos archivos la marca suele ir en la columna Obs., no en M)."""
     zona_por_tren: dict[int, int] = {}
+    cap_por_tren: dict[int, int] = {}
     trenes_multiple: set[int] = set()
     for _code, colmap in bloques:
         cols = list(colmap.values())
@@ -894,7 +896,10 @@ def _pm_mapas_por_tren(sh, fila_enc, bloques):
             zona = _pm_a_entero(_pm_val(sh, r, colmap.get("Destino")))
             if tren not in zona_por_tren and zona is not None:
                 zona_por_tren[tren] = zona
-    return zona_por_tren, trenes_multiple
+            cap = _pm_a_entero(_pm_val(sh, r, colmap.get("Capacidad")))
+            if tren not in cap_por_tren and cap is not None and cap > 0:
+                cap_por_tren[tren] = cap
+    return zona_por_tren, cap_por_tren, trenes_multiple
 
 
 def _pm_abrir(origen):
@@ -969,7 +974,7 @@ def leer_planilla_maniobras(origen, hoja=None) -> list[dict]:
     wb = _pm_abrir(origen)
     sh = wb.sheet_by_name(_elegir_hoja(wb, hoja))
     fila_enc, bloques = _pm_detectar(sh)
-    zona_por_tren, trenes_multiple = _pm_mapas_por_tren(sh, fila_enc, bloques)
+    zona_por_tren, cap_por_tren, trenes_multiple = _pm_mapas_por_tren(sh, fila_enc, bloques)
 
     salidas = []
     for code, colmap in bloques:
@@ -982,9 +987,13 @@ def leer_planilla_maniobras(origen, hoja=None) -> list[dict]:
             tren = int(tren)
             destino = _pm_destino(code, zona_por_tren.get(tren),
                                   _pm_val(sh, r, colmap.get("Destino")))
+            # Capacidad: la de la fila; si no, la del tren; si no, queda None
+            cap = _pm_a_entero(_pm_val(sh, r, colmap.get("Capacidad")))
+            if cap is None or cap <= 0:
+                cap = cap_por_tren.get(tren)
             salidas.append({
                 "hora": hora, "origen": code, "destino": destino,
-                "via": _pm_via(code, destino),
+                "via": _pm_via(code, destino), "capacidad": cap,
                 "tren": tren, "unidades": 2 if tren in trenes_multiple else 1,
             })
     salidas.sort(key=lambda d: (d["hora"], d["origen"]))
@@ -994,8 +1003,9 @@ def leer_planilla_maniobras(origen, hoja=None) -> list[dict]:
 def escribir_simulador_xls(salidas: list[dict], destino, constante: int = 450) -> None:
     """Escribe el formato plano del simulador como .xls. `destino` puede ser ruta o un buffer.
 
-    `constante` es el valor fijo de la columna I (450): se escribe igual en todas
-    las filas, sin importar si el tren es simple o doble.
+    La columna I lleva la cantidad de pasajeros que soporta el tren: se toma de la
+    columna **Capacidad** de la Planilla + Maniobras y, si esa columna no existe o
+    viene vacía, se usa `constante` (450).
 
     Formato de celdas:
       * Columna A (hora): TEXTO con la forma "HH:MM:SS".
@@ -1018,7 +1028,8 @@ def escribir_simulador_xls(salidas: list[dict], destino, constante: int = 450) -
         ws.write(i, 5, s["destino"])                                 # F · texto
         ws.write(i, 6, "servicio")                                   # G · texto
         ws.write(i, 7, s["tren"], estilo_numero)                     # H · tren (número)
-        ws.write(i, 8, constante, estilo_numero)                     # I · valor fijo (número)
+        cap = s.get("capacidad")
+        ws.write(i, 8, cap if cap else constante, estilo_numero)     # I · capacidad (número)
     wb.save(destino)
 
 

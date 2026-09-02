@@ -125,9 +125,52 @@ THDR_FILA_DATOS = 6    # primera fila de datos
 # --------------------------------------------------------------------------- #
 # Utilidades de tiempo
 # --------------------------------------------------------------------------- #
-def hms_to_seconds(value: str) -> int:
-    h, m, s = (int(p) for p in str(value).split(":"))
-    return h * 3600 + m * 60 + s
+def hms_a_segundos(value):
+    """Segundos desde medianoche, o None si la celda está vacía o no es una hora.
+
+    Acepta 'H:MM:SS' y 'H:MM'. Tolera celdas vacías, NaN y texto no numérico,
+    que aparecen cuando el CSV trae filas incompletas o líneas en blanco.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s == "" or s.lower() in ("nan", "nat", "none", "-"):
+        return None
+    partes = s.split(":")
+    if not 1 <= len(partes) <= 3:
+        return None
+    try:
+        nums = [int(float(p)) for p in partes]
+    except ValueError:
+        return None
+    while len(nums) < 3:
+        nums.append(0)
+    return nums[0] * 3600 + nums[1] * 60 + nums[2]
+
+
+def hms_to_seconds(value) -> int:
+    """Igual que `hms_a_segundos`, pero falla si el valor no es una hora válida."""
+    seg = hms_a_segundos(value)
+    if seg is None:
+        raise ValueError(f"Hora no válida: {value!r}")
+    return seg
+
+
+def _entero(valor, defecto: int = 0) -> int:
+    """Convierte a int tolerando vacíos, NaN y texto. Devuelve `defecto` si no se puede."""
+    try:
+        f = float(valor)
+    except (TypeError, ValueError):
+        return defecto
+    return defecto if f != f else int(f)      # f != f  ->  NaN
+
+
+def _texto(valor) -> str:
+    """Texto limpio de una celda; cadena vacía si viene vacía o NaN."""
+    if valor is None:
+        return ""
+    s = str(valor).strip()
+    return "" if s.lower() in ("nan", "nat", "none") else s
 
 
 def seconds_to_time(total: float, round_minutes: bool = False) -> time:
@@ -147,8 +190,34 @@ def _hhmmss(total: float) -> str:
 # --------------------------------------------------------------------------- #
 # 1) Resumir el CSV a una fila por viaje
 # --------------------------------------------------------------------------- #
+def _paradas_validas(g, cfg: Config) -> list[dict]:
+    """Paradas utilizables de un viaje: descarta filas sin estación o sin ninguna hora.
+
+    Si falta una de las dos horas, se usa la otra (una parada sin llegada es el
+    origen; sin salida, el destino final).
+    """
+    paradas = []
+    for _, r in g.iterrows():
+        est = _texto(r[cfg.col_station])
+        lleg = hms_a_segundos(r[cfg.col_arrive])
+        sal = hms_a_segundos(r[cfg.col_leave])
+        if not est or (lleg is None and sal is None):
+            continue
+        paradas.append({
+            "est": est,
+            "lleg": lleg if lleg is not None else sal,
+            "sal": sal if sal is not None else lleg,
+            "fila": r,
+        })
+    return paradas
+
+
 def cargar_viajes(csv_path, cfg: Config) -> pd.DataFrame:
-    """Lee el CSV (ruta o buffer) y devuelve un DataFrame con una fila por tripID."""
+    """Lee el CSV (ruta o buffer) y devuelve un DataFrame con una fila por tripID.
+
+    Las filas incompletas (sin estación o sin horas) se descartan; el total
+    descartado queda en `viajes.attrs["descartadas"]`.
+    """
     df = pd.read_csv(csv_path, sep=cfg.sep)
 
     faltan = [c for c in (cfg.col_trip, cfg.col_train, cfg.col_cap, cfg.col_track,
@@ -160,23 +229,32 @@ def cargar_viajes(csv_path, cfg: Config) -> pd.DataFrame:
             f"Columnas encontradas: {list(df.columns)}"
         )
 
-    viajes = []
+    viajes, descartadas = [], 0
     for trip_id, g in df.groupby(cfg.col_trip, sort=True):
         g = g.reset_index(drop=True)
-        primera, ultima = g.iloc[0], g.iloc[-1]
+        paradas = _paradas_validas(g, cfg)
+        descartadas += len(g) - len(paradas)
+        if not paradas:
+            continue
+        primera, ultima = paradas[0], paradas[-1]
         viajes.append({
-            "trip": int(trip_id),
-            "train": int(primera[cfg.col_train]),
-            "cap": int(primera[cfg.col_cap]),
-            "track": int(primera[cfg.col_track]),
-            "orig": primera[cfg.col_station],
-            "dep": primera[cfg.col_leave],
-            "dep_s": hms_to_seconds(primera[cfg.col_leave]),
-            "dest": ultima[cfg.col_station],
-            "arr_s": hms_to_seconds(ultima[cfg.col_arrive]),
+            "trip": _entero(trip_id),
+            "train": _entero(primera["fila"][cfg.col_train]),
+            "cap": _entero(primera["fila"][cfg.col_cap]),
+            "track": _entero(primera["fila"][cfg.col_track]),
+            "orig": primera["est"],
+            "dep": _hhmmss(primera["sal"]),
+            "dep_s": primera["sal"],
+            "dest": ultima["est"],
+            "arr_s": ultima["lleg"],
         })
 
-    return pd.DataFrame(viajes).sort_values("dep_s").reset_index(drop=True)
+    if not viajes:
+        raise ValueError("El CSV no tiene viajes con estación y hora válidas.")
+
+    out = pd.DataFrame(viajes).sort_values("dep_s").reset_index(drop=True)
+    out.attrs["descartadas"] = descartadas
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -291,21 +369,24 @@ def cargar_paradas(csv_path, cfg: Config) -> list[dict]:
                      cfg.col_leave_pax, cfg.col_leave_est_pax))
     for trip_id, g in df.groupby(cfg.col_trip, sort=True):
         g = g.reset_index(drop=True)
+        validas = _paradas_validas(g, cfg)
+        if not validas:
+            continue
         paradas = []
-        for _, r in g.iterrows():
-            p = {"est": str(r[cfg.col_station]).strip(),
-                 "lleg": hms_to_seconds(r[cfg.col_arrive]),
-                 "sal": hms_to_seconds(r[cfg.col_leave])}
+        for p in validas:
+            r = p["fila"]
+            parada = {"est": p["est"], "lleg": p["lleg"], "sal": p["sal"]}
             if tiene_pax:
                 # carga = pasajeros a bordo al salir; suben = los que abordan aquí
-                p["carga"] = int(r[cfg.col_leave_pax])
-                p["suben"] = int(r[cfg.col_arrive_est_pax]) - int(r[cfg.col_leave_est_pax])
-            paradas.append(p)
+                parada["carga"] = _entero(r[cfg.col_leave_pax])
+                parada["suben"] = (_entero(r[cfg.col_arrive_est_pax])
+                                   - _entero(r[cfg.col_leave_est_pax]))
+            paradas.append(parada)
         viajes.append({
-            "trip": int(trip_id),
-            "train": int(g.iloc[0][cfg.col_train]),
-            "cap": int(g.iloc[0][cfg.col_cap]),
-            "track": int(g.iloc[0][cfg.col_track]),
+            "trip": _entero(trip_id),
+            "train": _entero(validas[0]["fila"][cfg.col_train]),
+            "cap": _entero(validas[0]["fila"][cfg.col_cap]),
+            "track": _entero(validas[0]["fila"][cfg.col_track]),
             "pax": tiene_pax,
             "paradas": paradas,
         })

@@ -71,6 +71,7 @@ def _procesar_csv(raw, nombre, sep, cod_puerto, cod_limache, nombre_puerto,
     wb = construir_workbook(cols, tablas, cfg, viajes["dep"].iloc[0], nombre, paradas)
     buf = io.BytesIO(); wb.save(buf)
     resumen = dict(viajes=len(viajes), trenes=int(viajes["train"].nunique()),
+                   descartadas=int(viajes.attrs.get("descartadas", 0)),
                    via1=sum(1 for v in paradas if v["track"] == 0),
                    via2=sum(1 for v in paradas if v["track"] == 1))
     return cols, tablas, buf.getvalue(), resumen
@@ -128,6 +129,10 @@ def modo_csv_a_planilla():
 
     st.download_button("⬇️  Descargar Excel (.xlsx)", data=xlsx_bytes,
                        file_name="Planilla_Maniobras.xlsx", mime=XLSX_MIME, type="primary")
+
+    if resumen.get("descartadas"):
+        st.info(f"Se omitieron {resumen['descartadas']} filas del CSV por venir sin "
+                "estación o sin horas (celdas vacías o líneas en blanco).")
 
     mc = st.columns(2 + len(cols))
     mc[0].metric("Viajes", resumen["viajes"])

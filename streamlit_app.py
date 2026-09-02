@@ -17,6 +17,7 @@ Ejecutar en local:
 
 import datetime as dt
 import io
+import traceback
 
 import pandas as pd
 import streamlit as st
@@ -42,7 +43,8 @@ MODO_2 = "Planilla + Maniobras → Simulador  (.xls → .xls)"
 
 st.set_page_config(page_title="Planilla + Maniobras", page_icon="🚆", layout="wide")
 st.title("🚆 Planilla Horaria + Maniobras")
-st.caption("⚙️ Versión NUEVA · descarga con botón · vista previa opcional (marca la casilla)")
+VERSION = "v5 · Múltiple automático (450 simple · 900 doble) · vía 1/2 por sentido · columna I fija"
+st.caption(f"⚙️ {VERSION}")
 
 
 # --------------------------------------------------------------------------- #
@@ -97,7 +99,12 @@ def modo_csv_a_planilla():
     with st.sidebar:
         maniobras = st.checkbox("Incluir maniobras (EV/RET/SV)", value=True)
         round_minutes = st.checkbox("Redondear horas al minuto", value=False)
-        multiple_threshold = st.number_input("Capacidad para «Múltiple» ≥", min_value=1, value=400, step=50)
+        auto_multiple = st.checkbox(
+            "Detectar «Múltiple» automáticamente", value=True,
+            help="Doble = capacidad al menos el doble de la simple del archivo "
+                 "(con 450/900: 450 es simple y 900 es doble).")
+        multiple_threshold = 0 if auto_multiple else st.number_input(
+            "Capacidad para «Múltiple» ≥", min_value=1, value=900, step=50)
         train_prefix = st.text_input("Prefijo de tren", value="", placeholder="(ninguno)")
         with st.expander("Avanzado · terminales"):
             sep = st.text_input("Separador del CSV", value=";")
@@ -120,6 +127,8 @@ def modo_csv_a_planilla():
         )
     except Exception as exc:  # noqa: BLE001
         st.error(f"No se pudo procesar el archivo: {exc}")
+        with st.expander("Ver detalle técnico"):
+            st.code(traceback.format_exc())
         return
 
     if not cols or not isinstance(cols[0], dict):
@@ -205,6 +214,8 @@ def modo_planilla_a_simulador():
         return
     except Exception as exc:  # noqa: BLE001
         st.error(f"No se pudo leer la planilla: {exc}")
+        with st.expander("Ver detalle técnico"):
+            st.code(traceback.format_exc())
         return
 
     if not salidas:

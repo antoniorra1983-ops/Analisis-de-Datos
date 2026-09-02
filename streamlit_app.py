@@ -160,8 +160,9 @@ def _hojas_archivo(raw):
 
 def modo_planilla_a_simulador():
     with st.sidebar:
-        constante = st.number_input("Capacidad por unidad (simple)", min_value=0, value=406, step=1,
-                                    help="406 por unidad: 406 si es simple, 812 si es doble.")
+        constante = st.number_input("Valor de la columna I", min_value=0, value=450, step=1,
+                                    help="Se escribe igual en todas las filas (450), "
+                                         "sin importar si el tren es simple o doble.")
 
     archivo = st.file_uploader("Sube la Planilla + Maniobras (.xls)", type=["xls"], key="xls")
     if archivo is None:
@@ -220,11 +221,12 @@ def modo_planilla_a_simulador():
         df = pd.DataFrame([{
             "Hora": hhmmss(s["hora"]), "Origen": s["origen"], "Vía": s["via"],
             "Destino": s["destino"], "Tren": s["tren"],
-            "Cap.": int(constante) * s["unidades"],
+            "Unid.": s["unidades"],
+            "Col I": int(constante),
         } for s in salidas])
         st.table(df.head(60))
-        st.caption("Primeras 60 filas; el .xls trae todas. La vía va en las columnas C y E; "
-                   "la capacidad (406 simple · 812 doble) en la última.")
+        st.caption("Primeras 60 filas; el .xls trae todas. La vía va en las columnas C y E "
+                   "(1 = hacia Limache, 2 = hacia Puerto) y la columna I lleva el valor fijo.")
 
 
 # --------------------------------------------------------------------------- #

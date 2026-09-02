@@ -67,7 +67,7 @@ class Config:
         default_factory=lambda: [("BTO", "El Belloto"), ("SGA", "Sargento Aldea")]
     )
 
-    multiple_threshold: int = 400       # capacidad >= esto  ->  "Múltiple"
+    multiple_threshold: int = 0         # capacidad >= esto -> "Múltiple" (0 = automático)
     round_minutes: bool = False         # redondear horas al minuto
     maniobras: bool = True              # derivar EV / RET / SV
     train_prefix: str = ""              # prefijo para renumerar trenes
@@ -154,6 +154,20 @@ def hms_to_seconds(value) -> int:
     if seg is None:
         raise ValueError(f"Hora no válida: {value!r}")
     return seg
+
+
+def umbral_multiple(capacidades, cfg: Config) -> int:
+    """Capacidad a partir de la cual un tren se considera «Múltiple» (doble).
+
+    Si `cfg.multiple_threshold` es mayor que 0 se respeta ese valor. Si es 0
+    (automático) se deduce del propio archivo: el doble de la capacidad simple,
+    que es la menor del archivo. Así, con capacidades 450/900 el simple es 450 y
+    el doble 900; con 200/400, el simple es 200 y el doble 400.
+    """
+    if cfg.multiple_threshold and cfg.multiple_threshold > 0:
+        return int(cfg.multiple_threshold)
+    validas = [int(c) for c in capacidades if _entero(c) > 0]
+    return 2 * min(validas) if validas else 10 ** 9
 
 
 def _entero(valor, defecto: int = 0) -> int:
@@ -310,6 +324,7 @@ def _columna_de(orig: str, track: int, cols: list[dict], cfg: Config) -> int:
 def construir_columna(viajes: pd.DataFrame, fines: dict, col: dict, cfg: Config) -> list[list]:
     """Filas (listas de 9 celdas) de una terminal: salidas desde col['code'] + SV que terminan allí."""
     sub = viajes[viajes["_col_code"] == col["code"]].sort_values("dep_s").reset_index(drop=True)
+    umbral = umbral_multiple(viajes["cap"], cfg)
     filas: list[list] = []
     prev_s = None
     n = 0
@@ -318,7 +333,7 @@ def construir_columna(viajes: pd.DataFrame, fines: dict, col: dict, cfg: Config)
         inter = seconds_to_time(x.dep_s - prev_s, cfg.round_minutes) if prev_s is not None else None
         prev_s = x.dep_s
         destino = "" if x.dest == col["implied"] else x.dest
-        multiple = "Múltiple" if x.cap >= cfg.multiple_threshold else ""
+        multiple = "Múltiple" if x.cap >= umbral else ""
         maniobra = x.man if cfg.maniobras else ""
         filas.append([x.trip, _fmt_tren(x.train, cfg),
                       seconds_to_time(x.dep_s, cfg.round_minutes),
@@ -326,7 +341,7 @@ def construir_columna(viajes: pd.DataFrame, fines: dict, col: dict, cfg: Config)
 
     if cfg.maniobras:
         for r in sorted(fines.get(col["code"], []), key=lambda d: d["end_s"]):
-            multiple = "Múltiple" if r["cap"] >= cfg.multiple_threshold else ""
+            multiple = "Múltiple" if r["cap"] >= umbral else ""
             filas.append(["", _fmt_tren(r["train"], cfg), None, "", None,
                           "SV", "", multiple, "Estaciona"])
     return filas
@@ -425,6 +440,7 @@ def agregar_hojas_thdr(wb: Workbook, paradas_viajes: list[dict], cfg: Config) ->
     center = Alignment(horizontal="center", vertical="center")
     wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
     fmt_time = "h:mm" if cfg.round_minutes else "h:mm:ss"
+    umbral_thdr = umbral_multiple([v["cap"] for v in paradas_viajes], cfg)
 
     creadas = []
     for via, track in ((1, 0), (2, 1)):
@@ -467,7 +483,7 @@ def agregar_hojas_thdr(wb: Workbook, paradas_viajes: list[dict], cfg: Config) ->
             ws.cell(r, 2, v["train"]).alignment = center
             prog = ws.cell(r, 3, seconds_to_time(v["paradas"][0]["sal"], True))
             prog.number_format, prog.alignment = "h:mm", center
-            if v["cap"] >= cfg.multiple_threshold:
+            if v["cap"] >= umbral_thdr:
                 ws.cell(r, 6, "M").alignment = center     # Unidad: M = múltiple
             for j in range(1, len(THDR_CAMPOS) + 1):
                 cc = ws.cell(r, j)

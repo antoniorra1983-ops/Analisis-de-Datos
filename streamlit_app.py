@@ -43,7 +43,7 @@ MODO_2 = "Planilla + Maniobras → Simulador  (.xls → .xls)"
 
 st.set_page_config(page_title="Planilla + Maniobras", page_icon="🚆", layout="wide")
 st.title("🚆 Planilla Horaria + Maniobras")
-VERSION = "v9 · N° de viaje: pares vía 1 · impares vía 2 (por llegada)"
+VERSION = "v10 · filas de paso en terminales intermedias · N° de viaje por convención"
 st.caption(f"⚙️ {VERSION}")
 
 
@@ -68,8 +68,8 @@ def _procesar_csv(raw, nombre, sep, cod_puerto, cod_limache, nombre_puerto,
         maniobras=maniobras, train_prefix=train_prefix, titulo=titulo,
     )
     viajes = cargar_viajes(io.BytesIO(raw), cfg)
-    cols, tablas = construir_tablas(viajes, cfg)
     paradas = cargar_paradas(io.BytesIO(raw), cfg)
+    cols, tablas = construir_tablas(viajes, cfg, paradas)
     wb = construir_workbook(cols, tablas, cfg, viajes["dep"].iloc[0], nombre, paradas)
     buf = io.BytesIO(); wb.save(buf)
     resumen = dict(viajes=len(viajes), trenes=int(viajes["train"].nunique()),

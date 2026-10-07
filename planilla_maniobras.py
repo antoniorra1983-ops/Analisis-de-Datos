@@ -348,23 +348,57 @@ def _columna_de(orig: str, track: int, cols: list[dict], cfg: Config) -> int:
     return 0 if track == 0 else len(cols) - 1  # respaldo: track 0 -> Puerto, 1 -> Limache
 
 
-def construir_columna(viajes: pd.DataFrame, fines: dict, col: dict, cfg: Config) -> list[list]:
-    """Filas (listas de 9 celdas) de una terminal: salidas desde col['code'] + SV que terminan allí."""
+def _pasos_por_terminal(col: dict, paradas_viajes, cfg: Config) -> list[tuple]:
+    """Trenes que PASAN por una terminal intermedia camino a Puerto, sin salir de ella.
+
+    En la planilla aparecen como filas sin N° de viaje, solo con tren, hora e
+    intervalo; sirven para ver la frecuencia de paso por ese punto.
+    """
+    if not paradas_viajes or col["code"] in (cfg.cod_puerto, cfg.cod_limache):
+        return []
+    pasos = []
+    for v in paradas_viajes:
+        if v["track"] == 0:                             # solo sentido hacia Puerto
+            continue
+        if v["paradas"][0]["est"] == col["code"]:       # sale de aquí: ya es un servicio
+            continue
+        for p in v["paradas"][:-1]:                     # el destino final no es "paso"
+            if p["est"] == col["code"]:
+                pasos.append((p["sal"], v["train"]))
+                break
+    return pasos
+
+
+def construir_columna(viajes: pd.DataFrame, fines: dict, col: dict, cfg: Config,
+                      paradas_viajes=None) -> list[list]:
+    """Filas (listas de 9 celdas) de una terminal: salidas desde col['code'],
+    trenes que pasan (si es intermedia) y SV que terminan allí."""
     sub = viajes[viajes["_col_code"] == col["code"]].sort_values("dep_s").reset_index(drop=True)
     umbral = umbral_multiple(viajes["cap"], cfg)
+
+    eventos = [(x.dep_s, True, x) for x in sub.itertuples()]
+    eventos += [(h, False, tren) for h, tren in _pasos_por_terminal(col, paradas_viajes, cfg)]
+    eventos.sort(key=lambda e: (e[0], not e[1]))
+
     filas: list[list] = []
     prev_s = None
     n = 0
-    for x in sub.itertuples():
-        n += 1
-        inter = seconds_to_time(x.dep_s - prev_s, cfg.round_minutes) if prev_s is not None else None
-        prev_s = x.dep_s
-        destino = "" if x.dest == col["implied"] else x.dest
-        multiple = "Múltiple" if x.cap >= umbral else ""
-        maniobra = x.man if cfg.maniobras else ""
-        filas.append([x.trip, _fmt_tren(x.train, cfg),
-                      seconds_to_time(x.dep_s, cfg.round_minutes),
-                      n, inter, maniobra, destino, multiple, ""])
+    for hora_s, es_servicio, dato in eventos:
+        inter = seconds_to_time(hora_s - prev_s, cfg.round_minutes) if prev_s is not None else None
+        prev_s = hora_s
+        if es_servicio:
+            n += 1
+            x = dato
+            destino = "" if x.dest == col["implied"] else x.dest
+            multiple = "Múltiple" if x.cap >= umbral else ""
+            maniobra = x.man if cfg.maniobras else ""
+            filas.append([x.trip, _fmt_tren(x.train, cfg),
+                          seconds_to_time(hora_s, cfg.round_minutes),
+                          n, inter, maniobra, destino, multiple, ""])
+        else:                                            # fila de paso: sin N° de viaje
+            filas.append(["", _fmt_tren(dato, cfg),
+                          seconds_to_time(hora_s, cfg.round_minutes),
+                          "", inter, "", "", "", ""])
 
     if cfg.maniobras:
         for r in sorted(fines.get(col["code"], []), key=lambda d: d["end_s"]):
@@ -374,7 +408,8 @@ def construir_columna(viajes: pd.DataFrame, fines: dict, col: dict, cfg: Config)
     return filas
 
 
-def construir_tablas(viajes: pd.DataFrame, cfg: Config) -> tuple[list[dict], list[list[list]]]:
+def construir_tablas(viajes: pd.DataFrame, cfg: Config,
+                     paradas_viajes=None) -> tuple[list[dict], list[list[list]]]:
     """Devuelve (columnas, tablas) en paralelo: una lista de filas por terminal."""
     viajes = asignar_maniobras(viajes) if cfg.maniobras else viajes.assign(man="")
     fines = fines_de_servicio(viajes) if cfg.maniobras else {}
@@ -385,7 +420,7 @@ def construir_tablas(viajes: pd.DataFrame, cfg: Config) -> tuple[list[dict], lis
     viajes["_col_code"] = [cols[_columna_de(r.orig, r.track, cols, cfg)]["code"]
                            for r in viajes.itertuples()]
 
-    tablas = [construir_columna(viajes, fines, c, cfg) for c in cols]
+    tablas = [construir_columna(viajes, fines, c, cfg, paradas_viajes) for c in cols]
     return cols, tablas
 
 
@@ -773,9 +808,9 @@ def escribir_excel(cols, tablas, out_path: str, cfg: Config,
 def convertir(csv_path: str, out_path: str, cfg: Config) -> dict:
     """Pipeline completo CSV -> XLSX en disco. Devuelve un resumen."""
     viajes = cargar_viajes(csv_path, cfg)
-    cols, tablas = construir_tablas(viajes, cfg)
-    hora_inicio = viajes["dep"].iloc[0]
     paradas_viajes = cargar_paradas(csv_path, cfg)
+    cols, tablas = construir_tablas(viajes, cfg, paradas_viajes)
+    hora_inicio = viajes["dep"].iloc[0]
     escribir_excel(cols, tablas, out_path, cfg, hora_inicio,
                    os.path.basename(csv_path), paradas_viajes)
 

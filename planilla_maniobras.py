@@ -1005,7 +1005,8 @@ def escribir_simulador_xls(salidas: list[dict], destino, constante: int = 450) -
 
     La columna I lleva la cantidad de pasajeros que soporta el tren: se toma de la
     columna **Capacidad** de la Planilla + Maniobras y, si esa columna no existe o
-    viene vacía, se usa `constante` (450).
+    viene vacía, se usa `constante` por unidad: 450 si es simple y 900 si el tren
+    aparece como «Múltiple».
 
     Formato de celdas:
       * Columna A (hora): TEXTO con la forma "HH:MM:SS".
@@ -1028,8 +1029,8 @@ def escribir_simulador_xls(salidas: list[dict], destino, constante: int = 450) -
         ws.write(i, 5, s["destino"])                                 # F · texto
         ws.write(i, 6, "servicio")                                   # G · texto
         ws.write(i, 7, s["tren"], estilo_numero)                     # H · tren (número)
-        cap = s.get("capacidad")
-        ws.write(i, 8, cap if cap else constante, estilo_numero)     # I · capacidad (número)
+        cap = s.get("capacidad") or constante * s.get("unidades", 1)
+        ws.write(i, 8, cap, estilo_numero)                           # I · capacidad (número)
     wb.save(destino)
 
 

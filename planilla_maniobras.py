@@ -69,6 +69,7 @@ class Config:
 
     multiple_threshold: int = 0         # capacidad >= esto -> "Múltiple" (0 = automático)
     renumerar_viajes: bool = True       # N° de viaje: pares vía 1, impares vía 2
+    filas_de_paso: bool = False         # listar trenes que solo pasan por una intermedia
     round_minutes: bool = False         # redondear horas al minuto
     maniobras: bool = True              # derivar EV / RET / SV
     train_prefix: str = ""              # prefijo para renumerar trenes
@@ -372,7 +373,8 @@ def _pasos_por_terminal(col: dict, paradas_viajes, cfg: Config) -> list[tuple]:
     En la planilla aparecen como filas sin N° de viaje, solo con tren, hora e
     intervalo; sirven para ver la frecuencia de paso por ese punto.
     """
-    if not paradas_viajes or col["code"] in (cfg.cod_puerto, cfg.cod_limache):
+    if (not cfg.filas_de_paso or not paradas_viajes
+            or col["code"] in (cfg.cod_puerto, cfg.cod_limache)):
         return []
     pasos = []
     for v in paradas_viajes:

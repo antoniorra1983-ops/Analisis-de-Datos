@@ -68,6 +68,7 @@ class Config:
     )
 
     multiple_threshold: int = 0         # capacidad >= esto -> "Múltiple" (0 = automático)
+    renumerar_viajes: bool = True       # N° de viaje: pares vía 1, impares vía 2
     round_minutes: bool = False         # redondear horas al minuto
     maniobras: bool = True              # derivar EV / RET / SV
     train_prefix: str = ""              # prefijo para renumerar trenes
@@ -154,6 +155,27 @@ def hms_to_seconds(value) -> int:
     if seg is None:
         raise ValueError(f"Hora no válida: {value!r}")
     return seg
+
+
+def numerar_viajes(registros) -> dict[int, int]:
+    """Numeración de viajes según la convención de la planilla.
+
+    Vía 1 (Puerto -> Limache, track 0): pares 2, 4, 6... por hora de SALIDA.
+    Vía 2 (hacia Puerto): impares 1, 3, 5... por hora de LLEGADA a Puerto.
+    (Verificado contra el archivo laboral: 135/135 y 131/131.)
+
+    `registros`: lista de tuplas (trip, track, salida_s, llegada_s).
+    Devuelve {trip original: número de viaje}.
+    """
+    registros = list(registros)
+    mapa: dict[int, int] = {}
+    via1 = sorted((x for x in registros if x[1] == 0), key=lambda x: (x[2], x[0]))
+    via2 = sorted((x for x in registros if x[1] != 0), key=lambda x: (x[3], x[0]))
+    for i, x in enumerate(via1):
+        mapa[x[0]] = 2 + 2 * i
+    for i, x in enumerate(via2):
+        mapa[x[0]] = 1 + 2 * i
+    return mapa
 
 
 def umbral_multiple(capacidades, cfg: Config) -> int:
@@ -265,6 +287,11 @@ def cargar_viajes(csv_path, cfg: Config) -> pd.DataFrame:
 
     if not viajes:
         raise ValueError("El CSV no tiene viajes con estación y hora válidas.")
+
+    if cfg.renumerar_viajes:
+        mapa = numerar_viajes([(v["trip"], v["track"], v["dep_s"], v["arr_s"]) for v in viajes])
+        for v in viajes:
+            v["trip"] = mapa.get(v["trip"], v["trip"])
 
     out = pd.DataFrame(viajes).sort_values("dep_s").reset_index(drop=True)
     out.attrs["descartadas"] = descartadas
@@ -405,6 +432,12 @@ def cargar_paradas(csv_path, cfg: Config) -> list[dict]:
             "pax": tiene_pax,
             "paradas": paradas,
         })
+
+    if cfg.renumerar_viajes:
+        mapa = numerar_viajes([(v["trip"], v["track"], v["paradas"][0]["sal"],
+                                v["paradas"][-1]["lleg"]) for v in viajes])
+        for v in viajes:
+            v["trip"] = mapa.get(v["trip"], v["trip"])
     return viajes
 
 
@@ -475,8 +508,10 @@ def agregar_hojas_thdr(wb: Workbook, paradas_viajes: list[dict], cfg: Config) ->
                 c.fill = PatternFill("solid", fgColor=NAVY)
 
         # Datos (ordenados por hora de salida del origen)
-        viajes_via = sorted((v for v in paradas_viajes if v["track"] == track),
-                            key=lambda v: v["paradas"][0]["sal"])
+        # Vía 1 se ordena por salida; vía 2 por llegada a Puerto (igual que la numeración)
+        orden_t = ((lambda v: v["paradas"][0]["sal"]) if track == 0
+                   else (lambda v: v["paradas"][-1]["lleg"]))
+        viajes_via = sorted((v for v in paradas_viajes if v["track"] == track), key=orden_t)
         for i, v in enumerate(viajes_via):
             r = THDR_FILA_DATOS + i
             ws.cell(r, 1, v["trip"]).alignment = center
@@ -575,8 +610,10 @@ def agregar_hojas_carga(wb: Workbook, paradas_viajes: list[dict], cfg: Config) -
         col_de_est = {est: len(CARGA_CAMPOS) + 1 + i for i, est in enumerate(orden)}
         col_total = len(CARGA_CAMPOS) + len(orden) + 1
 
-        viajes_via = sorted((v for v in paradas_viajes if v["track"] == track),
-                            key=lambda v: v["paradas"][0]["sal"])
+        # Vía 1 se ordena por salida; vía 2 por llegada a Puerto (igual que la numeración)
+        orden_t = ((lambda v: v["paradas"][0]["sal"]) if track == 0
+                   else (lambda v: v["paradas"][-1]["lleg"]))
+        viajes_via = sorted((v for v in paradas_viajes if v["track"] == track), key=orden_t)
         for i, v in enumerate(viajes_via):
             r = CARGA_FILA_DATOS + i
             primera, ultima = v["paradas"][0], v["paradas"][-1]

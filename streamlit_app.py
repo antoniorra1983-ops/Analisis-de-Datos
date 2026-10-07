@@ -43,7 +43,7 @@ MODO_2 = "Planilla + Maniobras → Simulador  (.xls → .xls)"
 
 st.set_page_config(page_title="Planilla + Maniobras", page_icon="🚆", layout="wide")
 st.title("🚆 Planilla Horaria + Maniobras")
-VERSION = "v10 · filas de paso en terminales intermedias · N° de viaje por convención"
+VERSION = "v12 · transversal: terminales, zonas y capacidades deducidas del archivo"
 st.caption(f"⚙️ {VERSION}")
 
 

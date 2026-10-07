@@ -43,7 +43,7 @@ MODO_2 = "Planilla + Maniobras → Simulador  (.xls → .xls)"
 
 st.set_page_config(page_title="Planilla + Maniobras", page_icon="🚆", layout="wide")
 st.title("🚆 Planilla Horaria + Maniobras")
-VERSION = "v6 · columna I desde «Capacidad» · Múltiple automático · vía 1/2 por sentido"
+VERSION = "v7 · columna I: «Capacidad» del archivo, si no 450 simple · 900 Múltiple"
 st.caption(f"⚙️ {VERSION}")
 
 
@@ -175,8 +175,8 @@ def _hojas_archivo(raw):
 def modo_planilla_a_simulador():
     with st.sidebar:
         constante = st.number_input("Capacidad por defecto (columna I)", min_value=0, value=450, step=1,
-                                    help="Se usa solo si la Planilla + Maniobras no trae "
-                                         "columna «Capacidad» o viene vacía.")
+                                    help="Por unidad: 450 si es simple y el doble (900) si el tren es "
+                                         "«Múltiple». Se usa solo si el archivo no trae columna «Capacidad».")
 
     archivo = st.file_uploader("Sube la Planilla + Maniobras (.xls)", type=["xls"], key="xls")
     if archivo is None:
@@ -236,17 +236,18 @@ def modo_planilla_a_simulador():
     con_cap = sum(1 for s in salidas if s.get("capacidad"))
     if con_cap:
         st.caption(f"Capacidad (columna I): {con_cap} de {len(salidas)} servicios la toman de la "
-                   f"columna «Capacidad» del archivo; el resto usa {int(constante)}.")
+                   f"columna «Capacidad» del archivo; el resto usa {int(constante)} "
+                   f"({int(constante)*2} si es Múltiple).")
     else:
-        st.caption(f"El archivo no trae columna «Capacidad» con datos, así que la columna I "
-                   f"queda en {int(constante)} para todos los servicios.")
+        st.caption(f"El archivo no trae columna «Capacidad» con datos: la columna I queda en "
+                   f"{int(constante)} para los simples y {int(constante)*2} para los Múltiple.")
 
     if st.checkbox("Ver vista previa de los servicios"):
         df = pd.DataFrame([{
             "Hora": hhmmss(s["hora"]), "Origen": s["origen"], "Vía": s["via"],
             "Destino": s["destino"], "Tren": s["tren"],
             "Unid.": s["unidades"],
-            "Col I": s.get("capacidad") or int(constante),
+            "Col I": s.get("capacidad") or int(constante) * s["unidades"],
         } for s in salidas])
         st.table(df.head(60))
         st.caption("Primeras 60 filas; el .xls trae todas. La vía va en las columnas C y E "

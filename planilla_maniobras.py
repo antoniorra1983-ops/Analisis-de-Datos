@@ -874,32 +874,36 @@ def _pm_a_entero(v):
         return None
 
 
+def _pm_fila_multiple(sh, r, colmap) -> bool:
+    """¿Esta fila (este servicio) va en composición múltiple?
+
+    La marca «Múltiple» se escribe en la fila del servicio que la usa — en estos
+    archivos en la columna Obs. — y NO se aplica al resto de los viajes del tren:
+    un mismo tren puede correr múltiple en unos servicios y simple en otros.
+    """
+    c_ini, c_fin = min(colmap.values()), max(colmap.values())
+    return any("ltiple" in str(_pm_val(sh, r, c)).lower() for c in range(c_ini, c_fin + 1))
+
+
 def _pm_mapas_por_tren(sh, fila_enc, bloques):
-    """Recorre toda la hoja y arma tres mapas por tren:
+    """Recorre toda la hoja y arma dos mapas por tren:
        - zona_por_tren: valor (fijo por tren) de la columna Destino -> zona de
          destino (6 = Limache, 4 = Sargento Aldea). NO es la vía.
-       - cap_por_tren: valor de la columna Capacidad, si el archivo la trae.
-       - trenes_multiple: trenes con 'Múltiple' en CUALQUIER columna de alguna de sus
-         filas (en estos archivos la marca suele ir en la columna Obs., no en M)."""
+       - cap_por_tren: valor de la columna Capacidad, si el archivo la trae."""
     zona_por_tren: dict[int, int] = {}
     cap_por_tren: dict[int, int] = {}
-    trenes_multiple: set[int] = set()
     for _code, colmap in bloques:
-        cols = list(colmap.values())
-        c_ini, c_fin = min(cols), max(cols)
         for r in range(fila_enc + 1, sh.nrows):
             tren = _pm_a_entero(_pm_val(sh, r, colmap.get("Tren")))
             if tren is None or tren <= 0:
                 continue
-            if any("ltiple" in str(_pm_val(sh, r, c)).lower() for c in range(c_ini, c_fin + 1)):
-                trenes_multiple.add(tren)
             zona = _pm_a_entero(_pm_val(sh, r, colmap.get("Destino")))
             if tren not in zona_por_tren and zona is not None:
                 zona_por_tren[tren] = zona
             cap = _pm_a_entero(_pm_val(sh, r, colmap.get("Capacidad")))
             if tren not in cap_por_tren and cap is not None and cap > 0:
                 cap_por_tren[tren] = cap
-    return zona_por_tren, cap_por_tren, trenes_multiple
+    return zona_por_tren, cap_por_tren
 
 
 def _pm_abrir(origen):
@@ -974,7 +978,7 @@ def leer_planilla_maniobras(origen, hoja=None) -> list[dict]:
     wb = _pm_abrir(origen)
     sh = wb.sheet_by_name(_elegir_hoja(wb, hoja))
     fila_enc, bloques = _pm_detectar(sh)
-    zona_por_tren, cap_por_tren, trenes_multiple = _pm_mapas_por_tren(sh, fila_enc, bloques)
+    zona_por_tren, cap_por_tren = _pm_mapas_por_tren(sh, fila_enc, bloques)
 
     salidas = []
     for code, colmap in bloques:
@@ -994,7 +998,7 @@ def leer_planilla_maniobras(origen, hoja=None) -> list[dict]:
             salidas.append({
                 "hora": hora, "origen": code, "destino": destino,
                 "via": _pm_via(code, destino), "capacidad": cap,
-                "tren": tren, "unidades": 2 if tren in trenes_multiple else 1,
+                "tren": tren, "unidades": 2 if _pm_fila_multiple(sh, r, colmap) else 1,
             })
     salidas.sort(key=lambda d: (d["hora"], d["origen"]))
     return salidas

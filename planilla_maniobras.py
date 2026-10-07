@@ -245,6 +245,9 @@ def _paradas_validas(g, cfg: Config) -> list[dict]:
             "sal": sal if sal is not None else lleg,
             "fila": r,
         })
+    # El origen, el destino y las horas salen del recorrido ORDENADO por hora,
+    # no del orden en que vengan las filas en el archivo.
+    paradas.sort(key=lambda p: (p["lleg"], p["sal"]))
     return paradas
 
 
@@ -325,13 +328,28 @@ def fines_de_servicio(viajes: pd.DataFrame) -> dict[str, list[dict]]:
 # --------------------------------------------------------------------------- #
 # 3) Definir y construir las columnas (terminales)
 # --------------------------------------------------------------------------- #
-def columnas_visibles(viajes: pd.DataFrame, cfg: Config) -> list[dict]:
-    """Lista ordenada de terminales a mostrar: Puerto, intermedias con actividad, Limache."""
+def columnas_visibles(viajes: pd.DataFrame, cfg: Config,
+                      orden_estaciones=None) -> list[dict]:
+    """Lista ordenada de terminales a mostrar: Puerto, intermedias con actividad, Limache.
+
+    Las intermedias NO están fijas: es cualquier estación donde empiece o termine
+    algún servicio y que no sea uno de los dos extremos. El orden geográfico sale
+    del recorrido del propio archivo (o del catálogo de estaciones si no se pasa).
+    """
     presentes = set(viajes["orig"]) | set(viajes["dest"])
+    extremos = (cfg.cod_puerto, cfg.cod_limache)
+    orden = list(orden_estaciones or NOMBRES_ESTACIONES)
+    nombres = dict(cfg.intermedios)          # nombres preferidos, si se configuraron
+
+    intermedias = [e for e in orden if e in presentes and e not in extremos]
+    intermedias += [e for e in sorted(presentes)          # por si alguna no está en el orden
+                    if e not in extremos and e not in intermedias]
+
     cols = [dict(code=cfg.cod_puerto, nombre=cfg.nombre_puerto, implied=cfg.cod_limache)]
-    for code, nombre in cfg.intermedios:
-        if code in presentes:
-            cols.append(dict(code=code, nombre=nombre, implied=cfg.cod_puerto))
+    for code in intermedias:
+        cols.append(dict(code=code,
+                         nombre=nombres.get(code) or NOMBRES_ESTACIONES.get(code, code),
+                         implied=cfg.cod_puerto))
     cols.append(dict(code=cfg.cod_limache, nombre=cfg.nombre_limache, implied=cfg.cod_puerto))
     return cols
 
@@ -413,7 +431,8 @@ def construir_tablas(viajes: pd.DataFrame, cfg: Config,
     """Devuelve (columnas, tablas) en paralelo: una lista de filas por terminal."""
     viajes = asignar_maniobras(viajes) if cfg.maniobras else viajes.assign(man="")
     fines = fines_de_servicio(viajes) if cfg.maniobras else {}
-    cols = columnas_visibles(viajes, cfg)
+    orden = _orden_estaciones(paradas_viajes, 0) if paradas_viajes else None
+    cols = columnas_visibles(viajes, cfg, orden)
 
     # asignar cada viaje a su columna por origen
     viajes = viajes.copy()
@@ -833,12 +852,9 @@ def convertir(csv_path: str, out_path: str, cfg: Config) -> dict:
 # (xlrd y xlwt se importan de forma diferida para no exigirlos en el flujo CSV.)
 # =========================================================================== #
 
-# Etiqueta de terminal -> código de estación
-_TERMINALES_ETIQUETA = [("puerto", "PUE"), ("belloto", "BTO"),
-                        ("sargento", "SGA"), ("aldea", "SGA"), ("limache", "LIM")]
-# Códigos numéricos (zonas) de la columna Destino: 6 = Limache, 4 = Sargento Aldea.
+# Respaldo para los códigos de zona de la columna Destino, por si no se pueden
+# deducir del archivo (ver _pm_zonas_a_terminal, que los infiere de los datos).
 ZONA_A_ESTACION = {6: "LIM", 4: "SGA", 5: "BTO"}
-_ESTACIONES = {"PUE", "LIM", "SGA", "BTO", "AME", "PEN"}
 _ENCABEZADOS_PM = ["Viaje", "Tren", "Partida", "N°", "Inter.", "Man.", "Destino", "M", "Obs.", "Capacidad"]
 
 
@@ -871,67 +887,120 @@ def _pm_hora_seg(sh, wb, r, c):
     return None
 
 
+def _codigo_terminal(etiqueta: str, usados) -> str:
+    """Código de estación a partir del rótulo de la columna ('Terminal Puerto' -> PUE).
+
+    Usa el catálogo de estaciones; si el rótulo no está, arma un código con sus
+    iniciales, de modo que funcione con terminales que no conozcamos.
+    """
+    txt = _pm_norm(etiqueta).replace("terminal", "").strip(" .:-")
+    for code, nombre in NOMBRES_ESTACIONES.items():
+        if _pm_norm(nombre) == txt or _pm_norm(code) == txt:
+            return code
+    for code, nombre in NOMBRES_ESTACIONES.items():      # coincidencia parcial
+        if txt and (_pm_norm(nombre) in txt or txt in _pm_norm(nombre)):
+            return code
+    palabras = [p for p in txt.split() if p not in ("de", "la", "el", "los", "las")]
+    base = ("".join(p[0] for p in palabras) if len(palabras) > 1 else txt[:3]).upper()[:4]
+    base = base or "TER"
+    code, n = base, 2
+    while code in usados:                                 # evitar duplicados
+        code, n = f"{base}{n}", n + 1
+    return code
+
+
 def _pm_detectar(sh):
-    """Localiza la fila de encabezados y los bloques (terminal -> columnas)."""
-    fila_rot = fila_enc = None
+    """Localiza la fila de encabezados y los bloques (terminal -> columnas).
+
+    Los bloques se detectan por el FORMATO —cada bloque empieza en una columna
+    cuyo encabezado es 'Viaje'—, no por los nombres de las terminales, así que
+    sirve para cualquier planilla con esta estructura, tenga las terminales que
+    tenga y en la cantidad que sea.
+    """
+    fila_enc = None
     for r in range(min(15, sh.nrows)):
         textos = [_pm_norm(sh.cell_value(r, c)) for c in range(sh.ncols)]
         if any("viaje" in t for t in textos) and any("partida" in t for t in textos):
             fila_enc = r
-        if any("terminal" in t or "belloto" in t or "sargento" in t or "aldea" in t for t in textos):
-            fila_rot = r
+            break
     if fila_enc is None:
         raise ValueError("No se encontró la fila de encabezados (con 'Viaje'/'Partida').")
-    if fila_rot is None:
-        fila_rot = fila_enc - 1
 
-    inicios = []
-    for c in range(sh.ncols):
-        etq = _pm_norm(sh.cell_value(fila_rot, c))
-        if not etq:
-            continue
-        code = next((cod for clave, cod in _TERMINALES_ETIQUETA if clave in etq), None)
-        if code:
-            inicios.append((c, code))
+    inicios = [c for c in range(sh.ncols) if _pm_norm(sh.cell_value(fila_enc, c)) == "viaje"]
+    if not inicios:
+        raise ValueError("No se encontró ninguna columna 'Viaje' en los encabezados.")
 
-    bloques = []
-    for i, (c0, code) in enumerate(inicios):
-        c1 = inicios[i + 1][0] if i + 1 < len(inicios) else sh.ncols
+    # Rótulo de cada bloque: la fila no vacía más cercana por encima del encabezado
+    def rotulo(c0, c1):
+        for r in range(fila_enc - 1, max(-1, fila_enc - 4), -1):
+            for c in range(c0, c1):
+                txt = str(sh.cell_value(r, c)).strip()
+                if txt:
+                    return txt
+        return ""
+
+    bloques, usados = [], []
+    for i, c0 in enumerate(inicios):
+        c1 = inicios[i + 1] if i + 1 < len(inicios) else sh.ncols
         colmap = {}
         for c in range(c0, c1):
             h = _pm_norm(sh.cell_value(fila_enc, c))
             for nombre in _ENCABEZADOS_PM:
                 if _pm_norm(nombre) == h or (nombre == "N°" and h in ("n°", "n")):
-                    colmap[nombre] = c
+                    colmap.setdefault(nombre, c)
+        code = _codigo_terminal(rotulo(c0, c1), usados)
+        usados.append(code)
         bloques.append((code, colmap))
     return fila_enc, bloques
 
 
-def _pm_via(origen: str, destino: str) -> int:
-    """Vía del viaje: 1 = sentido Puerto -> Limache, 2 = sentido Limache -> Puerto.
+def _pm_via(origen: str, extremo_puerto: str) -> int:
+    """Vía del viaje: 1 = sentido Puerto -> Limache, 2 = sentido hacia Puerto.
 
-    Verificado contra las hojas V1/V2 del propio archivo laboral: V1 son las
-    salidas desde Puerto y V2 las que van hacia Puerto.
+    El extremo "Puerto" es el primer bloque de la planilla, no un código fijo.
+    Verificado contra las hojas V1/V2 del archivo laboral: V1 son las salidas
+    desde Puerto (135) y V2 las que van hacia Puerto (131).
     """
-    orden = list(NOMBRES_ESTACIONES)
-    try:
-        return 1 if orden.index(destino) > orden.index(origen) else 2
-    except ValueError:
-        return 1 if origen == "PUE" else 2
+    return 1 if origen == extremo_puerto else 2
 
 
-def _pm_destino(origen: str, zona, raw) -> str:
-    """Estación destino del viaje. Para salidas de Puerto se deduce de la zona
-    de la columna Destino (6→LIM, 4→SGA); el resto de terminales van a Puerto.
-    Un código de estación explícito en la celda (p. ej. sábado) tiene prioridad."""
-    if isinstance(raw, str) and raw.strip().upper() in _ESTACIONES:
+def _pm_zonas_a_terminal(sh, fila_enc, bloques, zona_por_tren) -> dict:
+    """Qué terminal representa cada código de la columna Destino (6, 4, ...).
+
+    No usa una tabla fija: mira desde qué terminal vuelve cada tren que lleva
+    ese código, así que se adapta a la planilla que sea.
+    """
+    from collections import Counter, defaultdict
+    vuelve = defaultdict(Counter)
+    extremo_puerto = bloques[0][0]
+    for code, colmap in bloques:
+        if code == extremo_puerto:
+            continue
+        for r in range(fila_enc + 1, sh.nrows):
+            tren = _pm_a_entero(_pm_val(sh, r, colmap.get("Tren")))
+            if tren is None or tren <= 0:
+                continue
+            zona = zona_por_tren.get(tren)
+            if zona is not None:
+                vuelve[zona][code] += 1
+    return {z: c.most_common(1)[0][0] for z, c in vuelve.items() if c}
+
+
+def _pm_destino(origen: str, zona, raw, zonas: dict,
+                extremo_puerto: str, extremo_limache: str) -> str:
+    """Estación destino del viaje.
+
+    Prioridad: código de estación escrito en la celda -> terminal deducida del
+    código de zona -> extremo opuesto. Las salidas desde cualquier terminal que
+    no sea el extremo Puerto van hacia Puerto.
+    """
+    if isinstance(raw, str) and raw.strip().upper() in set(NOMBRES_ESTACIONES):
         return raw.strip().upper()
-    if origen == "PUE":
-        try:
-            return ZONA_A_ESTACION.get(int(zona), "LIM")
-        except (TypeError, ValueError):
-            return "LIM"
-    return "PUE"
+    if origen != extremo_puerto:
+        return extremo_puerto
+    if zona is None:
+        return extremo_limache
+    return zonas.get(zona) or ZONA_A_ESTACION.get(zona, extremo_limache)
 
 
 def _pm_a_entero(v):
@@ -1051,6 +1120,9 @@ def leer_planilla_maniobras(origen, hoja=None) -> list[dict]:
     sh = wb.sheet_by_name(_elegir_hoja(wb, hoja))
     fila_enc, bloques = _pm_detectar(sh)
     zona_por_tren, cap_por_tren = _pm_mapas_por_tren(sh, fila_enc, bloques)
+    # Extremos de la línea: primer y último bloque de la planilla
+    extremo_puerto, extremo_limache = bloques[0][0], bloques[-1][0]
+    zonas = _pm_zonas_a_terminal(sh, fila_enc, bloques, zona_por_tren)
 
     salidas = []
     for code, colmap in bloques:
@@ -1062,14 +1134,15 @@ def leer_planilla_maniobras(origen, hoja=None) -> list[dict]:
                 continue  # filas de paso (sin viaje) o SV (sin hora) se omiten
             tren = int(tren)
             destino = _pm_destino(code, zona_por_tren.get(tren),
-                                  _pm_val(sh, r, colmap.get("Destino")))
+                                  _pm_val(sh, r, colmap.get("Destino")),
+                                  zonas, extremo_puerto, extremo_limache)
             # Capacidad: la de la fila; si no, la del tren; si no, queda None
             cap = _pm_a_entero(_pm_val(sh, r, colmap.get("Capacidad")))
             if cap is None or cap <= 0:
                 cap = cap_por_tren.get(tren)
             salidas.append({
                 "hora": hora, "origen": code, "destino": destino,
-                "via": _pm_via(code, destino), "capacidad": cap,
+                "via": _pm_via(code, extremo_puerto), "capacidad": cap,
                 "tren": tren, "unidades": 2 if _pm_fila_multiple(sh, r, colmap) else 1,
             })
     salidas.sort(key=lambda d: (d["hora"], d["origen"]))
